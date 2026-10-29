@@ -3,7 +3,9 @@ import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
+// GitHub Pages serves the site under /dark-pool/; local dev and the local lab stay at /.
 export default defineConfig({
+  base: process.env.DP_BASE || '/',
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: { '@': path.resolve(__dirname, './src') },

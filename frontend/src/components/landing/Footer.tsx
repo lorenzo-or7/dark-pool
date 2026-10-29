@@ -21,7 +21,8 @@ const cols = [
   { title: 'Acesso', links: [{ l: 'Entrar', h: '/login' }, { l: 'Recuperar senha', h: '/reset-password' }] },
 ]
 
-export function Footer() {
+/** publicOnly: the GitHub Pages build links only to sections of the landing page. */
+export function Footer({ publicOnly = false }: { publicOnly?: boolean }) {
   return (
     <footer className="border-t border-line bg-abyss">
       <div className="mx-auto max-w-7xl px-4 py-14 sm:px-6">
@@ -38,7 +39,7 @@ export function Footer() {
             </p>
           </div>
           <nav aria-label="Rodapé" className="grid grid-cols-2 gap-8 sm:grid-cols-3">
-            {cols.map((c) => (
+            {(publicOnly ? cols.slice(0, 1) : cols).map((c) => (
               <div key={c.title}>
                 <p className="eyebrow mb-4 text-[10px]">{c.title}</p>
                 <ul className="space-y-2.5">

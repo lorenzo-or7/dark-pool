@@ -18,6 +18,11 @@ const Journal = lazy(() => import('@/pages/app/Journal'))
 const Settings = lazy(() => import('@/pages/app/Settings'))
 const NotFound = lazy(() => import('@/pages/NotFound'))
 
+function LandingRoute() {
+  const { status } = useAuth()
+  return <Landing authed={status === 'signed-in'} />
+}
+
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { status } = useAuth()
   const loc = useLocation()
@@ -41,7 +46,7 @@ export default function App() {
   return (
     <Suspense fallback={fallback}>
       <Routes>
-        <Route path="/" element={<Landing />} />
+        <Route path="/" element={<LandingRoute />} />
         <Route path="/login" element={<Login />} />
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route

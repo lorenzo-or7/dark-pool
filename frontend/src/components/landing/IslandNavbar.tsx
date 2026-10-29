@@ -97,12 +97,18 @@ export function IslandNavbar({ enterTo, enterLabel }: { enterTo: string; enterLa
         </ul>
 
         <div className="flex items-center gap-1.5">
-          <Link
-            to={enterTo}
-            className="inline-flex h-9 items-center rounded-full bg-ember px-4 text-[13px] font-semibold text-ember-ink transition-colors hover:bg-ember-hi"
-          >
-            {enterLabel}
-          </Link>
+          {enterTo.startsWith('#') ? (
+            <a href={enterTo} className="inline-flex h-9 items-center rounded-full bg-ember px-4 text-[13px] font-semibold text-ember-ink transition-colors hover:bg-ember-hi">
+              {enterLabel}
+            </a>
+          ) : (
+            <Link
+              to={enterTo}
+              className="inline-flex h-9 items-center rounded-full bg-ember px-4 text-[13px] font-semibold text-ember-ink transition-colors hover:bg-ember-hi"
+            >
+              {enterLabel}
+            </Link>
+          )}
           <button
             type="button"
             className="inline-flex size-9 items-center justify-center rounded-full text-muted hover:bg-raised hover:text-fg md:hidden"

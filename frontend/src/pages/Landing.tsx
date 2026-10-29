@@ -1,5 +1,4 @@
 import { EclipseMark } from '@/brand/EclipseMark'
-import { useAuth } from '@/auth/AuthProvider'
 import { FeatureBento } from '@/components/landing/FeatureBento'
 import { Footer } from '@/components/landing/Footer'
 import { IslandNavbar } from '@/components/landing/IslandNavbar'
@@ -34,20 +33,19 @@ function Section({ id, eyebrow, title, children, className = '' }: { id?: string
   )
 }
 
-export default function Landing() {
-  const { status } = useAuth()
-  const authed = status === 'signed-in'
-  const enter = authed ? '/app' : '/login'
+/** publicOnly: the static GitHub Pages build. No login, no lab links, no backend calls. */
+export default function Landing({ authed = false, publicOnly = false }: { authed?: boolean; publicOnly?: boolean }) {
+  const enter = publicOnly ? '#acesso' : authed ? '/app' : '/login'
 
   return (
     <div className="min-h-screen bg-ink">
       <a href="#conteudo" className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:rounded focus:bg-ember focus:px-3 focus:py-2 focus:text-ember-ink">
         Pular para o conteúdo
       </a>
-      <IslandNavbar enterTo={enter} enterLabel={authed ? 'Abrir laboratório' : 'Entrar'} />
+      <IslandNavbar enterTo={enter} enterLabel={publicOnly ? 'Acesso privado' : authed ? 'Abrir laboratório' : 'Entrar'} />
       <main id="conteudo">
         <WovenLightHero sub="Explore o mercado além dos gráficos. Pesquise estratégias, simule cenários e transforme dados em conhecimento.">
-          <InteractiveHoverLink to={enter}>Acessar laboratório</InteractiveHoverLink>
+          <InteractiveHoverLink to={enter}>{publicOnly ? 'Acesso por convite' : 'Acessar laboratório'}</InteractiveHoverLink>
           <InteractiveHoverLink to="#funcionalidades" tone="ghost">
             Explorar funcionalidades
           </InteractiveHoverLink>
@@ -124,23 +122,27 @@ export default function Landing() {
           </p>
         </Section>
 
-        <section className="relative overflow-hidden border-t border-line px-4 py-28 sm:px-6 sm:py-36">
+        <section id="acesso" className="relative scroll-mt-24 overflow-hidden border-t border-line px-4 py-28 sm:px-6 sm:py-36">
           <EclipseMark className="pointer-events-none absolute top-1/2 left-1/2 size-[min(120vw,900px)] -translate-x-1/2 -translate-y-1/2 opacity-30" flare={false} title="" weight={0.35} />
           <div className="relative mx-auto flex max-w-3xl flex-col items-center text-center">
             <AnimatedContent distance={24}>
               <p className="eyebrow">Acesso privado</p>
-              <h2 className="mt-5 text-3xl leading-tight font-medium text-fg sm:text-5xl">Entre no laboratório.</h2>
+              <h2 className="mt-5 text-3xl leading-tight font-medium text-fg sm:text-5xl">{publicOnly ? 'Um laboratório privado.' : 'Entre no laboratório.'}</h2>
               <p className="mx-auto mt-5 max-w-lg text-muted">
-                O acesso é feito por convite. Se você faz parte do projeto, use o e-mail cadastrado.
+                {publicOnly
+                  ? 'O DARK POOL é usado por convite, no ambiente dos membros do projeto. Esta página apresenta a proposta e a metodologia; o laboratório não fica aberto ao público.'
+                  : 'O acesso é feito por convite. Se você faz parte do projeto, use o e-mail cadastrado.'}
               </p>
-              <div className="mt-9 flex justify-center">
-                <InteractiveHoverLink to={enter}>Acessar laboratório</InteractiveHoverLink>
-              </div>
+              {!publicOnly && (
+                <div className="mt-9 flex justify-center">
+                  <InteractiveHoverLink to={enter}>Acessar laboratório</InteractiveHoverLink>
+                </div>
+              )}
             </AnimatedContent>
           </div>
         </section>
       </main>
-      <Footer />
+      <Footer publicOnly={publicOnly} />
     </div>
   )
 }

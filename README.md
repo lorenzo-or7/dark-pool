@@ -110,6 +110,15 @@ membros só podem ser adicionados pela service role. O frontend nunca recebe a s
 **SEC EDGAR:** para notícias 8-K e resultados trimestrais (trader-news, trader-analyst), defina
 `SEC_USER_AGENT="Seu Nome seu@email"` no backend. Sem isso, as notícias vêm só do Yahoo e a aba de resultados avisa.
 
+## Site público (GitHub Pages)
+
+`https://lorenzo-or7.github.io/dark-pool/` publica **só a landing page**, gerada pelo workflow
+`.github/workflows/pages.yml` a cada push na `main` que altere `frontend/`. Esse build usa
+`DP_BASE=/dark-pool/` e `VITE_PUBLIC_ONLY=true`: o código do login, do laboratório e das chamadas à API fica fora do
+pacote. O desenvolvimento local continua em `/` com o laboratório completo.
+
+Configuração única no GitHub: **Settings → Pages → Build and deployment → Source = GitHub Actions**.
+
 ## Testes
 
 | Suíte | Comando |
