@@ -1,0 +1,65 @@
+# secrets and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+service-account*.json
+
+# python
+backend/.venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# local data: demo database, snapshots, cache, attachments
+backend/.data/
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.db
+*.db-*
+
+# node
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+test-results/
+playwright-report/
+blob-report/
+coverage/
+
+# supabase local
+supabase/.branches
+supabase/.temp
+supabase/signing_keys.json
+
+# logs and temporary files
+*.log
+logs/
+npm-debug.log*
+*.tmp
+*.temp
+*.bak
+*.swp
+tmp/
+temp/
+
+# local tool settings
+.claude/settings.local.json
+
+# os / editors
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/

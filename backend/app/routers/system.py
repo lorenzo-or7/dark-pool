@@ -1,0 +1,131 @@
+"""Health, public config, the signed-in user, workspace and dashboard."""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends
+from sqlalchemy import desc, func, select, update
+
+from ..auth import CurrentUser, current_user
+from ..config import APP_VERSION, ENGINE_VERSION, get_settings
+from ..db import (data_snapshots, experiments, jobs, profiles, scan_runs, strategies, tx, workspace_members,
+                  workspaces)
+from ..engines.runner import script_path
+from ..schemas import ProfileUpdate
+from ..services.tasks import universe_path
+from .common import audit, rows, ser
+
+router = APIRouter(prefix="/api")
+
+
+@router.get("/health")
+def health() -> dict:
+    s = get_settings()
+    engines = {}
+    for name in ("scanner", "timemachine", "entry", "exit", "budget", "risk", "news", "analyst"):
+        try:
+            script_path(name)
+            engines[name] = "ok"
+        except Exception:  # noqa: BLE001
+            engines[name] = "missing"
+    return {"status": "ok", "version": APP_VERSION, "engine": ENGINE_VERSION, "mode": s.dp_auth_mode,
+            "database": "postgres" if s.is_postgres else "sqlite", "engines": engines,
+            "broker": "not_integrated"}
+
+
+@router.get("/config")
+def public_config() -> dict:
+    s = get_settings()
+    return {"auth_mode": s.dp_auth_mode, "version": APP_VERSION, "signup": False}
+
+
+@router.get("/me")
+def me(user: CurrentUser = Depends(current_user)) -> dict:
+    with tx(user.id, user.email) as conn:
+        p = conn.execute(select(profiles).where(profiles.c.id == user.id)).mappings().first()
+    return {"id": str(user.id), "email": user.email, "display_name": user.display_name, "role": user.role,
+            "workspace": {"id": str(user.workspace_id), "name": user.workspace_name, "is_demo": user.is_demo},
+            "preferences": (p or {}).get("preferences") or {}}
+
+
+@router.patch("/me")
+def update_me(body: ProfileUpdate, user: CurrentUser = Depends(current_user)) -> dict:
+    values = body.model_dump(exclude_none=True)
+    if values:
+        with tx(user.id, user.email) as conn:
+            if "preferences" in values:
+                cur = conn.execute(select(profiles.c.preferences).where(profiles.c.id == user.id)).scalar() or {}
+                values["preferences"] = {**cur, **values["preferences"]}
+            conn.execute(update(profiles).where(profiles.c.id == user.id).values(**values))
+            audit(conn, user, "update", "profile", user.id, {"fields": sorted(values)})
+    return me(user)
+
+
+@router.get("/workspace")
+def workspace(user: CurrentUser = Depends(current_user)) -> dict:
+    s = get_settings()
+    with tx(user.id, user.email) as conn:
+        ws = conn.execute(select(workspaces).where(workspaces.c.id == user.workspace_id)).mappings().first()
+        members = rows(conn.execute(
+            select(workspace_members.c.user_id, workspace_members.c.role, workspace_members.c.created_at,
+                   profiles.c.email, profiles.c.display_name)
+            .join(profiles, profiles.c.id == workspace_members.c.user_id)
+            .where(workspace_members.c.workspace_id == user.workspace_id)
+            .order_by(workspace_members.c.created_at)))
+        last_snap = conn.execute(select(func.max(data_snapshots.c.fetched_at))
+                                 .where(data_snapshots.c.workspace_id == user.workspace_id,
+                                        data_snapshots.c.is_fixture.is_(False))).scalar()
+    u = universe_path()
+    return {
+        "workspace": ser(dict(ws)) if ws else None, "members": members,
+        "data_sources": [
+            {"name": "Yahoo Finance (chart)", "use": "Candles, cotações com atraso, snapshots", "status": "configurado",
+             "last_fetch": ser(last_snap)},
+            {"name": "Nasdaq Trader SymDir", "use": "Universo de ações do Market Scanner",
+             "status": "baixado" if u.exists() else "não baixado",
+             "last_fetch": ser(_mtime(u)) if u.exists() else None},
+            {"name": "SEC EDGAR", "use": "8-K (notícias) e resultados (Analyst)",
+             "status": "configurado" if s.sec_user_agent else "requer SEC_USER_AGENT", "last_fetch": None},
+        ],
+        "version": {"app": APP_VERSION, "engine": ENGINE_VERSION, "mode": s.dp_auth_mode,
+                    "database": "postgres" if s.is_postgres else "sqlite"},
+    }
+
+
+def _mtime(p):  # noqa: ANN001, ANN202
+    from datetime import UTC, datetime
+    return datetime.fromtimestamp(p.stat().st_mtime, UTC)
+
+
+@router.get("/dashboard")
+def dashboard(user: CurrentUser = Depends(current_user)) -> dict:
+    ws = user.workspace_id
+    with tx(user.id, user.email) as conn:
+        n_strat = conn.execute(select(func.count()).select_from(strategies).where(
+            strategies.c.workspace_id == ws, strategies.c.archived.is_(False))).scalar()
+        n_exp = conn.execute(select(func.count()).select_from(experiments).where(
+            experiments.c.workspace_id == ws, experiments.c.status == "succeeded")).scalar()
+        recent = rows(conn.execute(
+            select(experiments.c.id, experiments.c.kind, experiments.c.title, experiments.c.status,
+                   experiments.c.created_at, experiments.c.updated_at, experiments.c.error, experiments.c.strategy_id,
+                   experiments.c.params)
+            .where(experiments.c.workspace_id == ws).order_by(desc(experiments.c.created_at)).limit(8)))
+        backtests = rows(conn.execute(
+            select(experiments.c.id, experiments.c.title, experiments.c.created_at)
+            .where(experiments.c.workspace_id == ws, experiments.c.kind == "backtest",
+                   experiments.c.status == "succeeded").order_by(desc(experiments.c.created_at)).limit(20)))
+        last_snap = conn.execute(select(data_snapshots.c.symbol, data_snapshots.c.fetched_at, data_snapshots.c.source,
+                                        data_snapshots.c.interval)
+                                 .where(data_snapshots.c.workspace_id == ws, data_snapshots.c.is_fixture.is_(False))
+                                 .order_by(desc(data_snapshots.c.fetched_at)).limit(1)).mappings().first()
+        last_scan = conn.execute(select(scan_runs.c.created_at, scan_runs.c.status)
+                                 .where(scan_runs.c.workspace_id == ws)
+                                 .order_by(desc(scan_runs.c.created_at)).limit(1)).mappings().first()
+        active_jobs = conn.execute(select(func.count()).select_from(jobs).where(
+            jobs.c.workspace_id == ws, jobs.c.status.in_(("queued", "running")))).scalar()
+    return {
+        "counts": {"strategies": n_strat, "experiments": n_exp, "active_jobs": active_jobs},
+        "recent_experiments": recent,
+        "backtests": backtests,
+        "last_data": ser(dict(last_snap)) if last_snap else None,
+        "last_scan": ser(dict(last_scan)) if last_scan else None,
+    }

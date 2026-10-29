@@ -1,0 +1,12 @@
+{
+  "name": "darkpool-rls-check",
+  "private": true,
+  "type": "module",
+  "description": "Runs the DARK POOL migration on PGlite (embedded Postgres) with minimal auth/storage stand-ins and checks the RLS policies as two users.",
+  "scripts": {
+    "test": "node rls_check.mjs ../migrations/20261029000100_darkpool_schema.sql"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.3.16"
+  }
+}
