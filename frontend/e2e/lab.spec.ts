@@ -1,15 +1,20 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Browser, type Page } from '@playwright/test'
 
-/** End-to-end checks on the local demo stack. The Time Machine run uses the
- * skill's frozen TSLA file, so the expected numbers are exact. */
+/** End-to-end checks on the local public stack (see playwright.config.ts). Every test opens
+ * fresh browser contexts: no cookies, no storage, no session, like an anonymous window. */
 
-async function enterDemo(page: Page) {
-  await page.goto('/login')
-  await page.getByRole('button', { name: 'Entrar no modo demonstração' }).click()
-  await expect(page).toHaveURL(/\/app(\/|$)/)
+const API = 'http://127.0.0.1:8000/api'
+
+async function overflow(page: Page) {
+  return page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
 }
 
-test('landing renders the approved identity and navigates', async ({ page }) => {
+async function freshPage(browser: Browser, info: { project: { use: Record<string, unknown> } }) {
+  const ctx = await browser.newContext({ ...(info.project.use as object), storageState: undefined })
+  return { ctx, page: await ctx.newPage() }
+}
+
+test('landing renders the approved identity and opens the lab', async ({ page }) => {
   await page.goto('/')
   await expect(page).toHaveTitle(/DARK POOL/)
   await expect(page.getByRole('heading', { level: 1 })).toContainText('DARK POOL')
@@ -17,29 +22,35 @@ test('landing renders the approved identity and navigates', async ({ page }) => 
   await expect(page.locator('#funcionalidades')).toBeAttached()
   await expect(page.locator('#metodologia')).toBeAttached()
   await expect(page.getByText('Desenvolvido por')).toBeAttached()
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
-  expect(overflow).toBeLessThanOrEqual(16)
+  await expect(page.getByText(/Entrar$|Recuperar senha|Acesso por convite/)).toHaveCount(0)
+  expect(await overflow(page)).toBeLessThanOrEqual(16)
+  await page.getByRole('link', { name: 'Abrir laboratório' }).first().click()
+  await expect(page).toHaveURL(/\/app$/)
+  await expect(page.getByRole('heading', { level: 1, name: /Bom dia|Boa tarde|Boa noite/ })).toBeVisible()
 })
 
-test('private routes redirect to login, and logout ends the session', async ({ page, isMobile }) => {
-  await page.goto('/app/analytics')
-  await expect(page).toHaveURL(/\/login$/)
-  await page.getByRole('button', { name: 'Entrar no modo demonstração' }).click()
-  await expect(page, 'returns to the page that was asked for').toHaveURL(/\/app\/analytics$/)
-  await page.goto('/app/settings')
-  await expect(page.getByRole('heading', { name: 'Configurações' })).toBeVisible()
-  if (isMobile) {
-    await page.getByRole('button', { name: 'Mais' }).click()
-    await page.getByRole('dialog', { name: 'Mais opções' }).getByRole('button', { name: 'Sair' }).click()
-  } else {
-    await page.getByRole('button', { name: 'Sair' }).click()
+test('the lab opens without a session; old account paths lead to it', async ({ browser }, info) => {
+  const { ctx, page } = await freshPage(browser, info)
+  for (const path of ['/login', '/reset-password']) {
+    await page.goto(path)
+    await expect(page).toHaveURL(/\/app$/)
   }
   await page.goto('/app')
-  await expect(page).toHaveURL(/\/login$/)
+  await expect(page.getByRole('heading', { level: 1, name: /Bom dia|Boa tarde|Boa noite/ })).toBeVisible()
+  const text = await page.locator('body').innerText()
+  expect(text).not.toMatch(/Proprietário|Membro|Sair\b|Lorenzo|Lipe|@/)
+  if (info.project.name === 'desktop') {
+    await expect(page.getByRole('complementary').getByText('Laboratório compartilhado')).toBeVisible()
+  } else {
+    await page.getByRole('button', { name: 'Mais' }).click()
+    await expect(page.getByRole('dialog', { name: 'Mais opções' })).toContainText('Laboratório compartilhado')
+    await expect(page.getByRole('dialog', { name: 'Mais opções' }).getByRole('button', { name: 'Sair' })).toHaveCount(0)
+  }
+  await ctx.close()
 })
 
-test('all six lab areas are reachable', async ({ page }) => {
-  await enterDemo(page)
+test('every lab area opens directly and survives a reload', async ({ browser }, info) => {
+  const { ctx, page } = await freshPage(browser, info)
   for (const [path, heading] of [
     ['/app', /Bom dia|Boa tarde|Boa noite/],
     ['/app/scanner', 'Market Scanner'],
@@ -47,17 +58,100 @@ test('all six lab areas are reachable', async ({ page }) => {
     ['/app/time-machine', 'Time Machine'],
     ['/app/analytics', 'Analytics'],
     ['/app/journal', 'Trading Journal'],
+    ['/app/settings', 'Configurações'],
   ] as const) {
     await page.goto(path)
     await expect(page.getByRole('heading', { level: 1, name: heading })).toBeVisible()
-    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
-    expect(overflow, `${path} overflows horizontally`).toBeLessThanOrEqual(16)
+    await page.reload()
+    await expect(page.getByRole('heading', { level: 1, name: heading })).toBeVisible()
+    expect(await overflow(page), `${path} overflows horizontally`).toBeLessThanOrEqual(16)
   }
+  await ctx.close()
+})
+
+test('settings keep preferences in this browser and list no accounts', async ({ page }, info) => {
+  test.skip(info.project.name === 'mobile', 'covered on desktop')
+  await page.goto('/app/settings')
+  await expect(page.getByRole('heading', { name: 'Laboratório compartilhado' })).toBeVisible()
+  await expect(page.getByText(/Senha|Nome de exibição|Gerenciamento de acesso|invite_member/)).toHaveCount(0)
+  await page.getByLabel('Seed padrão').fill('7')
+  await page.getByRole('button', { name: 'Salvar preferências' }).click()
+  await expect(page.getByText('Salvas neste navegador.')).toBeVisible()
+  await page.reload()
+  await expect(page.getByLabel('Seed padrão')).toHaveValue('7')
+})
+
+test('two visitors share strategies, and a backtest is followed everywhere', async ({ browser }, info) => {
+  test.skip(info.project.name === 'mobile', 'covered on desktop')
+  const a = await freshPage(browser, info)
+  const b = await freshPage(browser, info)
+
+  // A creates a strategy; B sees it.
+  await a.page.goto('/app/strategies/new?symbol=TSLA')
+  const next = a.page.getByRole('button', { name: 'Continuar' })
+  await next.click()
+  await a.page.getByLabel(/Rompimento da faixa de abertura/).check()
+  for (let i = 0; i < 4; i++) await next.click()
+  const name = `E2E compartilhada ${Date.now()}`
+  await a.page.getByLabel('Nome da estratégia').fill(name)
+  await a.page.getByRole('button', { name: 'Salvar estratégia' }).click()
+  await expect(a.page.getByRole('heading', { level: 1, name })).toBeVisible()
+  const strategyUrl = a.page.url()
+  await b.page.goto('/app/strategies')
+  await expect(b.page.getByText(name)).toBeVisible()
+
+  // A starts a backtest on the frozen reference snapshot, closes the dialog and leaves the page.
+  await a.page.getByRole('button', { name: 'Rodar backtest' }).click()
+  const dlg = a.page.getByRole('dialog', { name: 'Rodar backtest' })
+  const option = dlg.locator('option', { hasText: 'de referência' }).first()
+  await dlg.getByLabel('Dados').selectOption((await option.getAttribute('value')) ?? '')
+  await dlg.getByRole('button', { name: 'Iniciar' }).click()
+  await expect(dlg.getByRole('progressbar')).toBeVisible()
+  await dlg.getByRole('button', { name: 'Fechar' }).click()
+  await a.page.getByRole('link', { name: 'Trading Journal' }).first().click()
+  await expect(a.page.getByRole('heading', { level: 1, name: 'Trading Journal' })).toBeVisible()
+
+  // B, in another browser, sees the same run and its end, without reloading.
+  await b.page.goto('/app')
+  const bDone = b.page.getByRole('link', { name: 'Ver em Analytics' })
+  const aDone = a.page.getByRole('link', { name: 'Ver em Analytics' })
+  await expect(aDone).toBeVisible({ timeout: 90_000 })
+  await expect(bDone).toBeVisible({ timeout: 30_000 })
+  await expect(a.page.getByRole('status').filter({ hasText: 'Concluído' })).toContainText(name)
+
+  // The link leads to that experiment; the strategy page lists it without F5.
+  await aDone.click()
+  await expect(a.page).toHaveURL(/\/app\/analytics\?exp=/)
+  await expect(a.page.getByRole('heading', { level: 1, name: 'Analytics' })).toBeVisible()
+  await a.page.goto(strategyUrl)
+  await expect(a.page.getByText(/Backtest ·/).first()).toBeVisible()
+
+  // Clean up the shared lab.
+  await a.page.getByRole('button', { name: 'Excluir estratégia' }).click()
+  await a.page.getByRole('button', { name: 'Excluir', exact: true }).click()
+  await expect(a.page).toHaveURL(/\/app\/strategies$/)
+  await a.ctx.close()
+  await b.ctx.close()
+})
+
+test('a failed run started by someone else shows its error without a reload', async ({ page, request }, info) => {
+  test.skip(info.project.name === 'mobile', 'covered on desktop')
+  await page.goto('/app/analytics')
+  await expect(page.getByRole('heading', { level: 1, name: 'Analytics' })).toBeVisible()
+  // Another visitor asks for a session the frozen data does not have: the engine refuses it.
+  const snaps = await (await request.get(`${API}/snapshots?symbol=TSLA&interval=5m`)).json()
+  const snap = snaps.find((s: { is_fixture: boolean }) => s.is_fixture).id
+  const r = await request.post(`${API}/timemachine`, {
+    data: { symbol: 'TSLA', date: '2026-01-05', entry: 364.18, stop: 358.32, target: 370.04, entry_time: '10:15', replays: 500, seed: 3, snapshot_id: snap },
+  })
+  expect(r.status()).toBe(202)
+  const alert = page.getByRole('alert').filter({ hasText: 'Falhou' })
+  await expect(alert).toBeVisible({ timeout: 60_000 })
+  await expect(alert.getByRole('link', { name: 'Ver simulação' })).toBeVisible()
 })
 
 test('Time Machine reference run reproduces the engine numbers', async ({ page }, info) => {
   test.skip(info.project.name === 'mobile', 'one run is enough; the mobile layout is covered above')
-  await enterDemo(page)
   await page.goto('/app/time-machine')
   await page.getByRole('button', { name: 'Exemplo de referência' }).click()
   await expect(page.getByLabel('Entrada (US$)')).toHaveValue('364.18')
@@ -74,39 +168,8 @@ test('Time Machine reference run reproduces the engine numbers', async ({ page }
   await expect(main).toContainText('Close to a coin flip: target first 29.4 % vs stop first 25.5 %.')
 })
 
-test('strategy can be created, versioned and deleted', async ({ page }, info) => {
+test('journal entry is persisted, searchable and deletable (with confirmation)', async ({ page }, info) => {
   test.skip(info.project.name === 'mobile', 'covered on desktop')
-  await enterDemo(page)
-  await page.goto('/app/strategies/new?symbol=TSLA')
-  const next = page.getByRole('button', { name: 'Continuar' })
-  await next.click()
-  await page.getByLabel(/Rompimento da faixa de abertura/).check()
-  await next.click()
-  await next.click()
-  await next.click()
-  await next.click()
-  const name = `E2E ORB ${Date.now()}`
-  await page.getByLabel('Nome da estratégia').fill(name)
-  await page.getByRole('button', { name: 'Salvar estratégia' }).click()
-  await expect(page.getByRole('heading', { level: 1, name })).toBeVisible()
-  await expect(page.getByText('Configuração atual · v1')).toBeVisible()
-  await page.getByRole('link', { name: 'Editar' }).click()
-  for (let i = 0; i < 3; i++) await page.getByRole('button', { name: 'Continuar' }).click()
-  await page.getByLabel('Alvo (R)').fill('1.5')
-  await page.getByRole('button', { name: 'Continuar' }).click()
-  await page.getByRole('button', { name: 'Continuar' }).click()
-  await page.getByRole('button', { name: 'Salvar nova versão' }).click()
-  await expect(page.getByText('Configuração atual · v2')).toBeVisible()
-  await expect(page.getByRole('table', { name: 'Diferenças entre versões' })).toContainText('exit.target_r')
-  await page.getByRole('button', { name: 'Excluir estratégia' }).click()
-  await page.getByRole('button', { name: 'Excluir', exact: true }).click()
-  await expect(page).toHaveURL(/\/app\/strategies$/)
-  await expect(page.getByText(name)).toHaveCount(0)
-})
-
-test('journal entry is persisted, searchable and deletable', async ({ page }, info) => {
-  test.skip(info.project.name === 'mobile', 'covered on desktop')
-  await enterDemo(page)
   await page.goto('/app/journal')
   const title = `Hipótese E2E ${Date.now()}`
   await page.getByRole('button', { name: 'Novo registro' }).click()
@@ -121,4 +184,13 @@ test('journal entry is persisted, searchable and deletable', async ({ page }, in
   await page.getByRole('button', { name: `Excluir ${title}` }).click()
   await page.getByRole('button', { name: 'Excluir', exact: true }).click()
   await expect(page.getByRole('heading', { name: title })).toHaveCount(0)
+})
+
+test('the API refuses too many job requests from one visitor', async ({ request }, info) => {
+  test.skip(info.project.name === 'mobile', 'server behaviour, once is enough')
+  const bad = { symbol: 'TSLA', date: '2026-10-19', entry: 364.18, stop: 358.32, target: 370.04, entry_time: '10:15', replays: 1, seed: 1 }
+  const codes: number[] = []
+  for (let i = 0; i < 70; i++) codes.push((await request.post(`${API}/timemachine`, { data: bad })).status())
+  expect(codes).toContain(422)
+  expect(codes).toContain(429)
 })

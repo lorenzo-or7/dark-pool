@@ -18,7 +18,7 @@ const cols = [
       { l: 'Trading Journal', h: '/app/journal' },
     ],
   },
-  { title: 'Acesso', links: [{ l: 'Entrar', h: '/login' }, { l: 'Recuperar senha', h: '/reset-password' }] },
+  { title: 'Acesso', links: [{ l: 'Abrir laboratório', h: '/app' }] },
 ]
 
 /** publicOnly: the GitHub Pages build links only to sections of the landing page. */
@@ -34,7 +34,7 @@ export function Footer({ publicOnly = false }: { publicOnly?: boolean }) {
             </div>
             <Tagline className="mt-4 block text-[10px] text-muted" />
             <p className="mt-6 max-w-sm text-sm leading-relaxed text-muted">
-              Laboratório privado de pesquisa quantitativa. Resultados históricos e simulações servem para estudo e não são recomendação de
+              Laboratório compartilhado de pesquisa quantitativa. Resultados históricos e simulações servem para estudo e não são recomendação de
               investimento nem previsão de mercado.
             </p>
           </div>
@@ -62,7 +62,7 @@ export function Footer({ publicOnly = false }: { publicOnly?: boolean }) {
           </nav>
         </div>
         <div className="mt-14 flex flex-col gap-3 border-t border-line pt-6 text-xs text-faint sm:flex-row sm:items-center sm:justify-between">
-          <p>© 2026 DARK POOL · Market Research Lab · uso privado de pesquisa</p>
+          <p>© 2026 DARK POOL · Market Research Lab · uso de pesquisa, sem ordens reais</p>
           <p>
             Desenvolvido por <span className="text-muted">Or7</span>
           </p>

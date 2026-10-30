@@ -180,6 +180,9 @@ def freeze_snapshot(conn: Connection, workspace_id: uuid.UUID, user_id: uuid.UUI
     if not path.exists():
         with gzip.open(path, "wt", encoding="utf-8") as fh:
             fh.write(text)
+    # The local file is only a cache on a host with an ephemeral disk: the durable copy goes to
+    # the private snapshots bucket, under the workspace's own prefix.
+    _persist(workspace_id, sha, path)
     if existing:
         return dict(existing)
     chart = parse_chart(text, symbol)
@@ -194,15 +197,49 @@ def freeze_snapshot(conn: Connection, workspace_id: uuid.UUID, user_id: uuid.UUI
     return row
 
 
-def read_snapshot_text(sha: str) -> str:
-    path = snapshot_file(sha)
-    if not path.exists():
-        raise DataError("snapshot_missing", "O arquivo do snapshot não está neste computador.")
-    with gzip.open(path, "rt", encoding="utf-8") as fh:
-        text = fh.read()
+def _persist(workspace_id: uuid.UUID, sha: str, path: Path) -> None:
+    from . import storage
+    if storage.backend() == "local":
+        return
+    key = storage.object_key(workspace_id, f"{sha}.json.gz")
+    try:
+        storage.put(storage.BUCKET_SNAPSHOTS, key, path.read_bytes(), "application/gzip", workspace_id)
+    except storage.StorageError as e:
+        raise DataError("snapshot_storage", f"Não foi possível guardar o snapshot: {e}")
+
+
+def _verified(raw_gz: bytes, sha: str) -> str:
+    text = gzip.decompress(raw_gz).decode("utf-8")
     if sha256_text(text) != sha:
         raise DataError("snapshot_corrupt", "O snapshot não confere com o hash registrado.")
     return text
+
+
+def read_snapshot_text(sha: str, workspace_id: uuid.UUID | None = None) -> str:
+    """The frozen payload, checked against its hash. Order: local cache, the workspace's private
+    bucket (after a restart the cache is empty), then the skill's bundled reference file."""
+    path = snapshot_file(sha)
+    if path.exists():
+        return _verified(path.read_bytes(), sha)
+    if workspace_id is not None:
+        from . import storage
+        if storage.backend() != "local":
+            try:
+                raw = storage.get(storage.BUCKET_SNAPSHOTS, storage.object_key(workspace_id, f"{sha}.json.gz"),
+                                  workspace_id)
+            except storage.StorageError as e:
+                raise DataError("snapshot_storage", f"Não foi possível ler o snapshot: {e}")
+            if raw is not None:
+                text = _verified(raw, sha)
+                path.write_bytes(raw)
+                return text
+    fx = fixture_path()
+    if fx.exists():
+        raw = fx.read_bytes()
+        if sha256_text(gzip.decompress(raw).decode("utf-8")) == sha:
+            path.write_bytes(raw)
+            return _verified(raw, sha)
+    raise DataError("snapshot_missing", "O arquivo do snapshot não foi encontrado no armazenamento.")
 
 
 def fixture_path() -> Path:

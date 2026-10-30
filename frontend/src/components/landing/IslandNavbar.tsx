@@ -97,7 +97,7 @@ export function IslandNavbar({ enterTo, enterLabel }: { enterTo: string; enterLa
         </ul>
 
         <div className="flex items-center gap-1.5">
-          {enterTo.startsWith('#') ? (
+          {enterTo.startsWith('#') || /^https?:\/\//.test(enterTo) ? (
             <a href={enterTo} className="inline-flex h-9 items-center rounded-full bg-ember px-4 text-[13px] font-semibold text-ember-ink transition-colors hover:bg-ember-hi">
               {enterLabel}
             </a>

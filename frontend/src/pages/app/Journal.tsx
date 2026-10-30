@@ -353,7 +353,7 @@ export default function Journal() {
                     </div>
                     <h2 className="mt-2 text-[15px] font-medium text-fg">{e.title}</h2>
                     <p className="mt-0.5 text-xs text-faint">
-                      {shortDate(e.entry_date)} · {e.author_name ?? e.author_email ?? 'autor desconhecido'} · editado {localDateTime(e.updated_at)}
+                      {shortDate(e.entry_date)}{e.author_name ? ` · ${e.author_name}` : ''} · editado {localDateTime(e.updated_at)}
                     </p>
                   </div>
                   <div className="flex gap-1">

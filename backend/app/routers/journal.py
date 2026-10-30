@@ -6,20 +6,24 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-import httpx
-from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
-from sqlalchemy import delete, desc, or_, select, update
+from sqlalchemy import delete, desc, func, or_, select, update
 
 from ..auth import CurrentUser, current_user
 from ..config import get_settings
 from ..db import attachments, experiments, journal_entries, new_id, now, profiles, strategies, tx
 from ..schemas import JournalWrite
+from ..services import storage
 from .common import audit, bad_request, not_found, rows, ser
 
 router = APIRouter(prefix="/api", dependencies=[Depends(current_user)])
 IMAGE_TYPES = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
-MAX_BYTES = 5 * 1024 * 1024
+MAX_BYTES = 5 * 1024 * 1024  # also enforced by the attachments table and bucket
+
+
+def _max_bytes() -> int:
+    return min(MAX_BYTES, get_settings().dp_max_upload_bytes)
 
 
 def _check_links(conn, user: CurrentUser, body: JournalWrite) -> None:  # noqa: ANN001
@@ -44,10 +48,16 @@ def list_entries(user: CurrentUser = Depends(current_user), q: str | None = Quer
                  tag: str | None = Query(None, max_length=32), kind: str | None = None,
                  date_from: str | None = None, date_to: str | None = None,
                  limit: int = Query(100, ge=1, le=500)) -> list[dict]:
-    author = profiles.alias("author")
-    stmt = (select(journal_entries, author.c.display_name.label("author_name"), author.c.email.label("author_email"))
-            .join(author, author.c.id == journal_entries.c.created_by, isouter=True)
-            .where(journal_entries.c.workspace_id == user.workspace_id)
+    if get_settings().is_public:
+        # Shared lab: entries are the lab's, not a person's. No names or e-mails of past authors.
+        stmt = select(journal_entries).where(journal_entries.c.workspace_id == user.workspace_id)
+    else:
+        author = profiles.alias("author")
+        stmt = (select(journal_entries, author.c.display_name.label("author_name"),
+                       author.c.email.label("author_email"))
+                .join(author, author.c.id == journal_entries.c.created_by, isouter=True)
+                .where(journal_entries.c.workspace_id == user.workspace_id))
+    stmt = (stmt
             .order_by(desc(journal_entries.c.entry_date), desc(journal_entries.c.created_at)).limit(limit))
     if q:
         like = f"%{q.strip()}%"
@@ -81,7 +91,10 @@ def create_entry(body: JournalWrite, user: CurrentUser = Depends(current_user)) 
             created_at=now(), updated_at=now(), **_values(body)))
         audit(conn, user, "create", "journal_entry", eid)
         row = conn.execute(select(journal_entries).where(journal_entries.c.id == eid)).mappings().first()
-    return {**ser(dict(row)), "author_name": user.display_name, "attachments": []}
+    out = {**ser(dict(row)), "attachments": []}
+    if not get_settings().is_public:
+        out["author_name"] = user.display_name
+    return out
 
 
 @router.put("/journal/{eid}")
@@ -120,18 +133,18 @@ def _local_dir() -> Path:
     return d
 
 
-def _storage_headers(request: Request) -> dict:
-    s = get_settings()
-    return {"Authorization": request.headers.get("authorization", ""), "apikey": s.supabase_anon_key}
+def _bearer(request: Request) -> str:
+    return request.headers.get("authorization", "") if get_settings().dp_auth_mode == "supabase" else ""
 
 
 def _remove_file(row: dict, request: Request) -> None:
     if row["storage"] == "local":
         (_local_dir() / Path(row["path"]).name).unlink(missing_ok=True)
     else:
-        s = get_settings()
-        httpx.delete(f"{s.supabase_url}/storage/v1/object/attachments/{row['path']}",
-                     headers=_storage_headers(request), timeout=20)
+        try:
+            storage.delete(storage.BUCKET_ATTACHMENTS, row["path"], row["workspace_id"], _bearer(request))
+        except storage.StorageError:
+            pass
 
 
 @router.post("/journal/{eid}/attachments", status_code=201)
@@ -140,9 +153,10 @@ async def upload_attachment(eid: uuid.UUID, request: Request, file: UploadFile =
     ext = IMAGE_TYPES.get(file.content_type or "")
     if not ext:
         raise bad_request("Envie uma imagem PNG, JPEG ou WebP.")
-    data = await file.read(MAX_BYTES + 1)
-    if len(data) > MAX_BYTES:
-        raise bad_request("Imagem acima de 5 MB.")
+    limit = _max_bytes()
+    data = await file.read(limit + 1)
+    if len(data) > limit:
+        raise HTTPException(413, {"code": "too_large", "message": f"Imagem acima de {limit // (1024 * 1024)} MB."})
     sig = {"png": b"\x89PNG", "jpg": b"\xff\xd8", "webp": b"RIFF"}[ext]
     if not data.startswith(sig):
         raise bad_request("O conteúdo do arquivo não corresponde ao tipo informado.")
@@ -151,22 +165,27 @@ async def upload_attachment(eid: uuid.UUID, request: Request, file: UploadFile =
                                                            journal_entries.c.workspace_id == user.workspace_id)
                         ).first() is None:
             raise not_found("Registro")
+        used = conn.execute(select(func.coalesce(func.sum(attachments.c.size), 0)).where(
+            attachments.c.workspace_id == user.workspace_id)).scalar() or 0
+    if used + len(data) > get_settings().dp_max_attachment_storage_mb * 1024 * 1024:
+        raise HTTPException(507, {"code": "storage_full",
+                                  "message": "O espaço para imagens do laboratório acabou. Exclua anexos antigos."})
     aid = new_id()
-    s = get_settings()
-    if s.is_demo:
-        storage, path = "local", f"{aid}.{ext}"
+    if storage.backend() == "local":
+        kind, path = "local", f"{aid}.{ext}"
         (_local_dir() / path).write_bytes(data)
     else:
-        storage, path = "supabase", f"{user.workspace_id}/{eid}/{aid}.{ext}"
-        r = httpx.post(f"{s.supabase_url}/storage/v1/object/attachments/{path}", content=data,
-                       headers={**_storage_headers(request), "Content-Type": file.content_type}, timeout=30)
-        if r.status_code >= 300:
-            raise bad_request(f"O Supabase Storage recusou o arquivo (HTTP {r.status_code}).", "storage_error")
+        kind, path = "supabase", storage.object_key(user.workspace_id, str(eid), f"{aid}.{ext}")
+        try:
+            storage.put(storage.BUCKET_ATTACHMENTS, path, data, file.content_type or "", user.workspace_id,
+                        _bearer(request))
+        except storage.StorageError as e:
+            raise bad_request(str(e), "storage_error")
     name = Path(file.filename or f"captura.{ext}").name[:200]
     with tx(user.id, user.email) as conn:
         conn.execute(attachments.insert().values(id=aid, workspace_id=user.workspace_id, journal_entry_id=eid,
                                                  filename=name, content_type=file.content_type, size=len(data),
-                                                 storage=storage, path=path, created_by=user.id, created_at=now()))
+                                                 storage=kind, path=path, created_by=user.id, created_at=now()))
         audit(conn, user, "upload", "attachment", aid)
     return {"id": str(aid), "filename": name, "content_type": file.content_type, "size": len(data)}
 
@@ -184,12 +203,12 @@ def get_attachment(aid: uuid.UUID, request: Request, user: CurrentUser = Depends
             raise not_found("Arquivo do anexo")
         data = p.read_bytes()
     else:
-        s = get_settings()
-        r = httpx.get(f"{s.supabase_url}/storage/v1/object/authenticated/attachments/{a['path']}",
-                      headers=_storage_headers(request), timeout=30)
-        if r.status_code != 200:
+        try:
+            data = storage.get(storage.BUCKET_ATTACHMENTS, a["path"], user.workspace_id, _bearer(request))
+        except storage.StorageError:
+            data = None
+        if data is None:
             raise not_found("Arquivo do anexo")
-        data = r.content
     return Response(data, media_type=a["content_type"], headers={"Cache-Control": "private, max-age=300",
                                                                  "X-Content-Type-Options": "nosniff"})
 

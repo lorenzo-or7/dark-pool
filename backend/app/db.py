@@ -300,7 +300,10 @@ def get_engine() -> Engine:
                 cur.execute("PRAGMA journal_mode=WAL")
                 cur.close()
         else:
-            _engine = create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=5)
+            # prepare_threshold=None: no server-side prepared statements, so Supabase's poolers
+            # (session or transaction mode) work as well as a direct connection.
+            _engine = create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=5, pool_recycle=300,
+                                    connect_args={"prepare_threshold": None})
     return _engine
 
 

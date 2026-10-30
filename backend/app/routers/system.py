@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import desc, func, select, update
 
-from ..auth import CurrentUser, current_user
+from ..auth import CurrentUser, PublicLabUnavailable, current_user, public_lab_user
 from ..config import APP_VERSION, ENGINE_VERSION, get_settings
 from ..db import (data_snapshots, experiments, jobs, profiles, scan_runs, strategies, tx, workspace_members,
                   workspaces)
 from ..engines.runner import script_path
 from ..schemas import ProfileUpdate
+from ..services import storage
 from ..services.tasks import universe_path
 from .common import audit, rows, ser
 
@@ -27,28 +28,53 @@ def health() -> dict:
             engines[name] = "ok"
         except Exception:  # noqa: BLE001
             engines[name] = "missing"
-    return {"status": "ok", "version": APP_VERSION, "engine": ENGINE_VERSION, "mode": s.dp_auth_mode,
-            "database": "postgres" if s.is_postgres else "sqlite", "engines": engines,
-            "broker": "not_integrated"}
+    out = {"status": "ok", "version": APP_VERSION, "engine": ENGINE_VERSION, "mode": s.dp_auth_mode,
+           "database": "postgres" if s.is_postgres else "sqlite", "engines": engines,
+           "storage": storage.backend(), "broker": "not_integrated"}
+    if s.is_public:
+        # Only a yes/no and a plain reason: no ids, hosts, keys or database details.
+        try:
+            public_lab_user()
+            out["public_lab"] = "ready"
+        except PublicLabUnavailable as e:
+            out["public_lab"] = "unconfigured"
+            out["status"] = "degraded"
+            out["detail"] = str(e)
+        except Exception:  # noqa: BLE001 - e.g. the database is unreachable
+            out["public_lab"] = "unavailable"
+            out["status"] = "degraded"
+            out["detail"] = "Banco de dados indisponível."
+    return out
 
 
 @router.get("/config")
 def public_config() -> dict:
     s = get_settings()
-    return {"auth_mode": s.dp_auth_mode, "version": APP_VERSION, "signup": False}
+    return {"auth_mode": s.dp_auth_mode, "access": "public" if s.is_public else "private",
+            "version": APP_VERSION, "signup": False}
 
 
 @router.get("/me")
 def me(user: CurrentUser = Depends(current_user)) -> dict:
+    if get_settings().is_public:
+        # The shared lab context. No account, e-mail, user id or member data.
+        return {"mode": "public", "display_name": user.display_name, "role": user.role,
+                "workspace": {"id": str(user.workspace_id), "name": user.workspace_name, "is_demo": user.is_demo},
+                "preferences": {}}
     with tx(user.id, user.email) as conn:
         p = conn.execute(select(profiles).where(profiles.c.id == user.id)).mappings().first()
-    return {"id": str(user.id), "email": user.email, "display_name": user.display_name, "role": user.role,
+    return {"mode": get_settings().dp_auth_mode, "id": str(user.id), "email": user.email,
+            "display_name": user.display_name, "role": user.role,
             "workspace": {"id": str(user.workspace_id), "name": user.workspace_name, "is_demo": user.is_demo},
             "preferences": (p or {}).get("preferences") or {}}
 
 
 @router.patch("/me")
 def update_me(body: ProfileUpdate, user: CurrentUser = Depends(current_user)) -> dict:
+    if get_settings().is_public:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, {
+            "code": "preferences_in_browser",
+            "message": "No laboratório compartilhado as preferências ficam salvas neste navegador."})
     values = body.model_dump(exclude_none=True)
     if values:
         with tx(user.id, user.email) as conn:
@@ -65,7 +91,7 @@ def workspace(user: CurrentUser = Depends(current_user)) -> dict:
     s = get_settings()
     with tx(user.id, user.email) as conn:
         ws = conn.execute(select(workspaces).where(workspaces.c.id == user.workspace_id)).mappings().first()
-        members = rows(conn.execute(
+        members = [] if s.is_public else rows(conn.execute(
             select(workspace_members.c.user_id, workspace_members.c.role, workspace_members.c.created_at,
                    profiles.c.email, profiles.c.display_name)
             .join(profiles, profiles.c.id == workspace_members.c.user_id)
@@ -75,8 +101,11 @@ def workspace(user: CurrentUser = Depends(current_user)) -> dict:
                                  .where(data_snapshots.c.workspace_id == user.workspace_id,
                                         data_snapshots.c.is_fixture.is_(False))).scalar()
     u = universe_path()
+    if s.is_public and ws:
+        # Only what the lab page shows; workspace settings and members stay private.
+        ws = {k: ws[k] for k in ("id", "name", "is_demo", "created_at")}
     return {
-        "workspace": ser(dict(ws)) if ws else None, "members": members,
+        "workspace": ser(dict(ws)) if ws else None, "members": members, "shared": s.is_public,
         "data_sources": [
             {"name": "Yahoo Finance (chart)", "use": "Candles, cotações com atraso, snapshots", "status": "configurado",
              "last_fetch": ser(last_snap)},

@@ -1,0 +1,45 @@
+# Render Blueprint: the DARK POOL API (FastAPI) as a Python web service.
+# Secrets use `sync: false`: Render asks for them when the Blueprint is created; they are
+# never stored in this file or in the repository.
+services:
+  - type: web
+    name: darkpool-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    # Render routes traffic to $PORT (default 10000) on 0.0.0.0.
+    startCommand: python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT --no-server-header
+    healthCheckPath: /api/health
+    autoDeploy: false
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.5
+      - key: DP_AUTH_MODE
+        value: public
+      - key: DP_PUBLIC_WORKSPACE_ID
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: DP_STORAGE
+        value: supabase
+      - key: DP_ALLOWED_ORIGINS
+        sync: false
+      - key: SEC_USER_AGENT
+        sync: false
+      - key: DP_TRUSTED_PROXY_HOPS
+        value: "1"
+      - key: DP_JOB_WORKERS
+        value: "1"
+      - key: DP_MAX_ACTIVE_JOBS
+        value: "3"
+      - key: DP_RATE_LIMIT_PER_MIN
+        value: "180"
+      - key: DP_RATE_LIMIT_WRITES_PER_MIN
+        value: "40"
+      - key: DP_RATE_LIMIT_JOBS_PER_MIN
+        value: "6"

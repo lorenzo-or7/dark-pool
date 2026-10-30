@@ -13,13 +13,33 @@ export type Job = {
   finished_at: string | null
 }
 
-export type Me = {
-  id: string
-  email: string
+/** GET /api/me: the shared lab's context. No account data in the public mode. */
+export type LabInfo = {
+  mode: 'public' | 'demo' | 'supabase'
   display_name: string
-  role: 'owner' | 'member'
+  role: string
   workspace: { id: string; name: string; is_demo: boolean }
   preferences: Record<string, unknown>
+}
+
+/** GET /api/jobs: every active or recent job of the shared workspace. */
+export type TrackedJob = {
+  id: string
+  type: string
+  status: JobStatus
+  progress: number
+  stage: string | null
+  error: string | null
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+  cancel_requested: boolean
+  title: string | null
+  experiment_id: string | null
+  scan_id: string | null
+  strategy_id: string | null
+  symbol: string | null
+  result: Record<string, number | string> | null
 }
 
 export type RuleType = 'orb' | 'breakout_20d' | 'bull_flag' | 'reclaim_ma20' | 'oversold' | 'oversold_bounce' | 'sma_cross' | 'macd_cross'
@@ -190,8 +210,8 @@ export type JournalEntry = {
   entry_date: string
   is_demo: boolean
   created_by: string
+  /** Only outside the shared lab (members-only mode). */
   author_name?: string | null
-  author_email?: string | null
   created_at: string
   updated_at: string
   attachments: { id: string; filename: string; content_type: string; size: number }[]

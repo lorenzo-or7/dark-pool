@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import uuid
 from pathlib import Path
 from typing import Literal
@@ -143,12 +144,28 @@ def quotes(symbols: str = Query(min_length=1, max_length=400)) -> dict:
     return {"quotes": out, "errors": errors, "source": md.SOURCE_LABEL, "delayed": True}
 
 
+_inline_engines: threading.BoundedSemaphore | None = None
+
+
+def _engine_slot() -> threading.BoundedSemaphore:
+    global _inline_engines
+    if _inline_engines is None:
+        _inline_engines = threading.BoundedSemaphore(get_settings().dp_max_inline_engines)
+    return _inline_engines
+
+
 def _engine_json(name: str, args: list[str], env: dict[str, str] | None = None) -> dict:
-    with tempfile.TemporaryDirectory(prefix="dp-") as d:
-        try:
-            res = run_script(name, args, Path(d), timeout_s=45, env_extra=env)
-        except EngineTimeout as e:
-            return {"ok": False, "code": "timeout", "message": str(e)}
+    slot = _engine_slot()
+    if not slot.acquire(timeout=10):
+        return {"ok": False, "code": "busy", "message": "O servidor está ocupado com outras consultas. Tente em instantes."}
+    try:
+        with tempfile.TemporaryDirectory(prefix="dp-") as d:
+            try:
+                res = run_script(name, args, Path(d), timeout_s=45, env_extra=env)
+            except EngineTimeout as e:
+                return {"ok": False, "code": "timeout", "message": str(e)}
+    finally:
+        slot.release()
     try:
         return {"ok": True, "doc": json.loads(res.stdout)}
     except ValueError:
@@ -168,7 +185,8 @@ def asset_news(symbol: str):
         args.append("--no-sec")
     r = _engine_json("news", args, {"SEC_USER_AGENT": ua} if ua else None)
     if not r["ok"]:
-        return JSONResponse({"detail": {"code": r["code"], "message": r["message"]}}, status_code=502)
+        return JSONResponse({"detail": {"code": r["code"], "message": r["message"]}},
+                            status_code=503 if r["code"] == "busy" else 502)
     return {"symbol": sym, "sec_included": bool(ua), **r["doc"],
             "note": None if ua else "Filings 8-K da SEC desativados: configure SEC_USER_AGENT no backend."}
 
@@ -186,7 +204,8 @@ def asset_fundamentals(symbol: str):
                             status_code=424)
     r = _engine_json("analyst", [sym, "--json", "--quarters", "6"], {"SEC_USER_AGENT": ua})
     if not r["ok"]:
-        return JSONResponse({"detail": {"code": r["code"], "message": r["message"]}}, status_code=502)
+        return JSONResponse({"detail": {"code": r["code"], "message": r["message"]}},
+                            status_code=503 if r["code"] == "busy" else 502)
     return {"symbol": sym, "source": "SEC EDGAR (XBRL company facts)", **r["doc"]}
 
 

@@ -129,7 +129,7 @@ def _snapshot_for(ctx: JobContext, symbol: str, snapshot_id: str | None, rng: st
         if row["interval"] != interval:
             raise JobFailure(f"O snapshot tem candles de {row['interval']}; esta análise precisa de {interval}.")
         try:
-            return dict(row), md.read_snapshot_text(row["sha256"])
+            return dict(row), md.read_snapshot_text(row["sha256"], ctx.user.workspace_id)
         except md.DataError as e:
             raise JobFailure(e.message)
     ctx.progress(10, f"Baixando {rng} de candles de {interval} de {symbol}")
@@ -137,9 +137,12 @@ def _snapshot_for(ctx: JobContext, symbol: str, snapshot_id: str | None, rng: st
         text, fetched, _ = md.fetch_chart_raw(symbol, rng, interval, use_cache=False)
     except md.DataError as e:
         raise JobFailure(e.message, e.code)
-    with tx(ctx.user.id, ctx.user.email) as conn:
-        row = md.freeze_snapshot(conn, ctx.user.workspace_id, ctx.user.id, text, symbol, interval, rng, md.SOURCE,
-                                 fetched)
+    try:
+        with tx(ctx.user.id, ctx.user.email) as conn:
+            row = md.freeze_snapshot(conn, ctx.user.workspace_id, ctx.user.id, text, symbol, interval, rng,
+                                     md.SOURCE, fetched)
+    except md.DataError as e:
+        raise JobFailure(e.message, e.code)
     return row, text
 
 

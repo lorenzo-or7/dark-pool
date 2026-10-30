@@ -29,10 +29,15 @@ def test_health_reports_engines_and_no_broker(client: TestClient) -> None:
     assert set(h["engines"].values()) == {"ok"}
 
 
-def test_private_routes_need_a_session(client: TestClient) -> None:
+def test_demo_is_loopback_only(client: TestClient) -> None:
+    """The local demo no longer has a login screen: loopback requests get the demo workspace,
+    a wrong token is still refused, and nothing outside the machine is accepted."""
     for path in ("/api/me", "/api/strategies", "/api/dashboard", "/api/journal", "/api/experiments"):
-        assert client.get(path).status_code == 401
+        assert client.get(path).status_code == 200
         assert client.get(path, headers={"Authorization": "Bearer wrong"}).status_code == 401
+    from fastapi.testclient import TestClient as TC
+    remote = TC(client.app, client=("203.0.113.9", 5555))
+    assert remote.get("/api/me").status_code == 401
 
 
 def test_me_and_workspace(client: TestClient) -> None:

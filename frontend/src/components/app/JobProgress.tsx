@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useRef } from 'react'
 import { StatusBadge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { useJobTrackerMaybe } from '@/lab/JobTracker'
 import { api } from '@/lib/api'
 import type { Job } from '@/lib/types'
 
@@ -26,8 +27,13 @@ export function useJob(jobId: string | null, onDone?: (j: Job) => void) {
   return q
 }
 
+/** Progress of one job inside the page or dialog that started it. The global tracker
+ * (lab/JobTracker) follows the same job independently, so closing this view loses nothing. */
 export function JobProgress({ jobId, onDone, label }: { jobId: string; onDone?: (j: Job) => void; label: string }) {
   const qc = useQueryClient()
+  const tracker = useJobTrackerMaybe()
+  const track = tracker?.track
+  useEffect(() => track?.(), [jobId, track])
   const q = useJob(jobId, onDone)
   const cancel = useMutation({
     mutationFn: () => api(`/jobs/${jobId}/cancel`, { method: 'POST' }),

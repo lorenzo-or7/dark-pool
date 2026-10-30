@@ -56,7 +56,7 @@ export const InteractiveHoverButton = forwardRef<HTMLButtonElement, Common & But
 InteractiveHoverButton.displayName = 'InteractiveHoverButton'
 
 export function InteractiveHoverLink({ to, children, tone = 'ember', className }: Common & { to: string }) {
-  const external = to.startsWith('#')
+  const external = to.startsWith('#') || /^https?:\/\//.test(to)
   const cls = cn(base, tone === 'ember' ? 'border-ember/60 bg-ink text-fg' : 'border-line-strong bg-ink/40 text-fg', className)
   if (external)
     return (

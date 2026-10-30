@@ -155,6 +155,9 @@ def _submit_experiment(user: CurrentUser, job_type: str, kind: str, title: str, 
 
 @router.post("/timemachine", status_code=status.HTTP_202_ACCEPTED)
 def run_timemachine(body: TimeMachineRequest, user: CurrentUser = Depends(current_user)) -> dict:
+    if body.strategy_id is not None:
+        with tx(user.id, user.email) as conn:
+            _get_strategy(conn, user, body.strategy_id)  # 404 unless it belongs to this lab
     params = body.model_dump(mode="json", exclude={"title"})
     title = body.title or (f"Time Machine · {body.symbol} {body.date.isoformat()} {body.entry_time} · "
                            f"{body.replays:,} replays · seed {body.seed}").replace(",", ".")
@@ -240,6 +243,32 @@ def export_experiment(eid: uuid.UUID, format: Literal["json", "csv"] = "json",  
 
 # ---------------------------------------------------------------- jobs
 
+JOB_PUBLIC_FIELDS = ("id", "type", "status", "progress", "stage", "error", "created_at", "started_at", "finished_at",
+                     "cancel_requested")
+
+
+@router.get("/jobs")
+def list_jobs(user: CurrentUser = Depends(current_user),
+              since_minutes: int = Query(30, ge=1, le=24 * 60)) -> list[dict]:
+    """Every job of the shared workspace that is active or ended recently, whoever started it.
+    The global tracker polls this, so a run started in another browser shows up too."""
+    out = []
+    for j in jobsvc.list_recent(user, since_minutes):
+        p = j.get("params") or {}
+        out.append({**{k: ser(j.get(k)) for k in JOB_PUBLIC_FIELDS}, "title": j.get("title"),
+                    "experiment_id": p.get("experiment_id"), "scan_id": p.get("scan_id"),
+                    "strategy_id": p.get("strategy_id"), "symbol": p.get("symbol") or (p.get("config") or {}).get("symbol"),
+                    "result": _job_result_summary(j)})
+    return out
+
+
+def _job_result_summary(j: dict) -> dict | None:
+    r = j.get("result")
+    if not isinstance(r, dict):
+        return None
+    return {k: r[k] for k in ("trades", "symbols", "hits", "scanned") if k in r and not isinstance(r[k], (dict, list))}
+
+
 @router.get("/jobs/{job_id}")
 def get_job(job_id: uuid.UUID, user: CurrentUser = Depends(current_user)) -> dict:
     j = jobsvc.get(user, job_id)
@@ -274,7 +303,10 @@ def list_snapshots(user: CurrentUser = Depends(current_user), symbol: str | None
 @router.post("/snapshots/fixture", status_code=201)
 def register_fixture(user: CurrentUser = Depends(current_user)) -> dict:
     with tx(user.id, user.email) as conn:
-        row = md.register_fixture(conn, user.workspace_id, user.id)
+        try:
+            row = md.register_fixture(conn, user.workspace_id, user.id)
+        except md.DataError as e:
+            raise HTTPException(502, {"code": e.code, "message": e.message})
         if row is None:
             raise not_found("Arquivo de referência TSLA-60d5m")
         audit(conn, user, "register", "snapshot", row["id"], {"fixture": True})
@@ -289,7 +321,7 @@ def _snapshot(user: CurrentUser, sid: uuid.UUID) -> tuple[dict, md.Chart]:
     if s is None:
         raise not_found("Snapshot")
     try:
-        return dict(s), md.parse_chart(md.read_snapshot_text(s["sha256"]), s["symbol"])
+        return dict(s), md.parse_chart(md.read_snapshot_text(s["sha256"], user.workspace_id), s["symbol"])
     except md.DataError as e:
         raise HTTPException(409, {"code": e.code, "message": e.message})
 
@@ -335,7 +367,7 @@ def orb_plan(body: OrbPlanRequest, user: CurrentUser = Depends(current_user)) ->
     if s["interval"] != "5m":
         raise bad_request("O plano ORB precisa de um snapshot de candles de 5 minutos.")
     entry, exitm = load_module("entry"), load_module("exit")
-    text = md.read_snapshot_text(s["sha256"])
+    text = md.read_snapshot_text(s["sha256"], user.workspace_id)
     close_utc = entry.eastern_to_utc(dt.datetime.combine(body.date, dt.time(16, 5)))
     try:
         chart = entry.parse_chart(text, s["symbol"])

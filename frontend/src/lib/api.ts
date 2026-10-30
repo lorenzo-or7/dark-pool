@@ -1,5 +1,17 @@
-/** Typed fetch wrapper for the DARK POOL API. The bearer token comes from the
- * auth layer (a Supabase session, or the local demo session). */
+/** Typed fetch wrapper for the DARK POOL API.
+ *
+ * The lab is public and shared: the browser holds no session, token or key. The backend
+ * decides the workspace on the server.
+ *
+ * Address: same origin by default (`/api`, proxied by Vite in development). A production
+ * build for a separate API host sets VITE_API_URL, e.g. https://darkpool-api.onrender.com */
+
+const API_BASE = ((import.meta.env.VITE_API_URL as string | undefined) ?? '').trim().replace(/\/+$/, '')
+
+/** Full URL of an API path, e.g. apiUrl('/health') -> https://host/api/health */
+export function apiUrl(path: string) {
+  return `${API_BASE}/api${path}`
+}
 
 export class ApiError extends Error {
   status: number
@@ -13,24 +25,14 @@ export class ApiError extends Error {
   }
 }
 
-let tokenProvider: () => Promise<string | null> = async () => null
-let onUnauthorized: () => void = () => {}
-
-export function configureApi(opts: { token: () => Promise<string | null>; unauthorized: () => void }) {
-  tokenProvider = opts.token
-  onUnauthorized = opts.unauthorized
-}
-
 type Opts = { method?: string; body?: unknown; signal?: AbortSignal; form?: FormData; raw?: boolean }
 
 export async function api<T = unknown>(path: string, opts: Opts = {}): Promise<T> {
-  const token = await tokenProvider()
   const headers: Record<string, string> = {}
-  if (token) headers.Authorization = `Bearer ${token}`
   if (opts.body !== undefined) headers['Content-Type'] = 'application/json'
   let res: Response
   try {
-    res = await fetch(`/api${path}`, {
+    res = await fetch(apiUrl(path), {
       method: opts.method ?? (opts.body !== undefined || opts.form ? 'POST' : 'GET'),
       headers,
       body: opts.form ?? (opts.body !== undefined ? JSON.stringify(opts.body) : undefined),
@@ -38,9 +40,8 @@ export async function api<T = unknown>(path: string, opts: Opts = {}): Promise<T
     })
   } catch (e) {
     if ((e as Error).name === 'AbortError') throw e
-    throw new ApiError(0, 'network', 'Não foi possível falar com o backend. Ele está em execução?')
+    throw new ApiError(0, 'network', 'Não foi possível falar com o servidor do laboratório. Se ele estava em repouso, aguarde cerca de um minuto e tente de novo.')
   }
-  if (res.status === 401) onUnauthorized()
   if (!res.ok) {
     let detail: { code?: string; message?: string; errors?: { field: string; message: string }[] } = {}
     try {

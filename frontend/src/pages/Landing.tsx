@@ -33,19 +33,22 @@ function Section({ id, eyebrow, title, children, className = '' }: { id?: string
   )
 }
 
-/** publicOnly: the static GitHub Pages build. No login, no lab links, no backend calls. */
-export default function Landing({ authed = false, publicOnly = false }: { authed?: boolean; publicOnly?: boolean }) {
-  const enter = publicOnly ? '#acesso' : authed ? '/app' : '/login'
+/** publicOnly: the static GitHub Pages build (landing only, no backend calls). Its CTA points
+ * to the full lab when VITE_LAB_URL is set at build time, otherwise to the access section. */
+const LAB_URL = ((import.meta.env.VITE_LAB_URL as string | undefined) ?? '').trim()
+
+export default function Landing({ publicOnly = false }: { publicOnly?: boolean }) {
+  const enter = publicOnly ? LAB_URL || '#acesso' : '/app'
 
   return (
     <div className="min-h-screen bg-ink">
       <a href="#conteudo" className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:rounded focus:bg-ember focus:px-3 focus:py-2 focus:text-ember-ink">
         Pular para o conteúdo
       </a>
-      <IslandNavbar enterTo={enter} enterLabel={publicOnly ? 'Acesso privado' : authed ? 'Abrir laboratório' : 'Entrar'} />
+      <IslandNavbar enterTo={enter} enterLabel="Abrir laboratório" />
       <main id="conteudo">
         <WovenLightHero sub="Explore o mercado além dos gráficos. Pesquise estratégias, simule cenários e transforme dados em conhecimento.">
-          <InteractiveHoverLink to={enter}>{publicOnly ? 'Acesso por convite' : 'Acessar laboratório'}</InteractiveHoverLink>
+          <InteractiveHoverLink to={enter}>Abrir laboratório</InteractiveHoverLink>
           <InteractiveHoverLink to="#funcionalidades" tone="ghost">
             Explorar funcionalidades
           </InteractiveHoverLink>
@@ -71,7 +74,7 @@ export default function Landing({ authed = false, publicOnly = false }: { authed
                 {[
                   ['5.942', 'ações listadas nos EUA no universo do scanner', 'Nasdaq Trader, out/2026'],
                   ['60 dias', 'de candles de 5 minutos por simulação', 'janela máxima da fonte gratuita'],
-                  ['2', 'pesquisadores no mesmo workspace', 'acesso por convite'],
+                  ['1', 'laboratório compartilhado', 'acesso aberto pelo link'],
                   ['0', 'ordens enviadas a corretoras', 'por definição do projeto'],
                 ].map(([v, l, s]) => (
                   <div key={l} className="bg-surface p-5 sm:p-6">
@@ -126,16 +129,16 @@ export default function Landing({ authed = false, publicOnly = false }: { authed
           <EclipseMark className="pointer-events-none absolute top-1/2 left-1/2 size-[min(120vw,900px)] -translate-x-1/2 -translate-y-1/2 opacity-30" flare={false} title="" weight={0.35} />
           <div className="relative mx-auto flex max-w-3xl flex-col items-center text-center">
             <AnimatedContent distance={24}>
-              <p className="eyebrow">Acesso privado</p>
-              <h2 className="mt-5 text-3xl leading-tight font-medium text-fg sm:text-5xl">{publicOnly ? 'Um laboratório privado.' : 'Entre no laboratório.'}</h2>
+              <p className="eyebrow">Acesso aberto</p>
+              <h2 className="mt-5 text-3xl leading-tight font-medium text-fg sm:text-5xl">Entre no laboratório.</h2>
               <p className="mx-auto mt-5 max-w-lg text-muted">
-                {publicOnly
-                  ? 'O DARK POOL é usado por convite, no ambiente dos membros do projeto. Esta página apresenta a proposta e a metodologia; o laboratório não fica aberto ao público.'
-                  : 'O acesso é feito por convite. Se você faz parte do projeto, use o e-mail cadastrado.'}
+                {publicOnly && !LAB_URL
+                  ? 'Esta página apresenta a proposta e a metodologia. O laboratório completo é publicado separadamente, em um endereço próprio.'
+                  : 'Sem cadastro e sem senha. Todos os visitantes usam o mesmo laboratório: estratégias, resultados, simulações e diário são compartilhados. Nenhuma ordem real é enviada.'}
               </p>
-              {!publicOnly && (
+              {(!publicOnly || LAB_URL) && (
                 <div className="mt-9 flex justify-center">
-                  <InteractiveHoverLink to={enter}>Acessar laboratório</InteractiveHoverLink>
+                  <InteractiveHoverLink to={enter}>Abrir laboratório</InteractiveHoverLink>
                 </div>
               )}
             </AnimatedContent>

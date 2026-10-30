@@ -11,9 +11,16 @@ from ..auth import CurrentUser
 from ..db import audit_events, now
 
 
+# In the shared lab, who wrote a row is not shown: no account ids of past authors.
+AUTHOR_KEYS = frozenset({"created_by", "updated_by", "added_by", "actor_id"})
+
+
 def ser(value: Any) -> Any:
     """Rows -> JSON-ready values. Naive datetimes (SQLite) are UTC."""
     if isinstance(value, dict):
+        from ..config import get_settings
+        if get_settings().is_public:
+            return {k: ser(v) for k, v in value.items() if k not in AUTHOR_KEYS}
         return {k: ser(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [ser(v) for v in value]

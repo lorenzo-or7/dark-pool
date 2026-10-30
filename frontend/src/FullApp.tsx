@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { AuthProvider } from '@/auth/AuthProvider'
+import { JobTrackerProvider } from '@/lab/JobTracker'
+import { LabProvider } from '@/lab/LabProvider'
 import { ApiError } from '@/lib/api'
 import App from './App'
 
@@ -13,13 +14,15 @@ const queryClient = new QueryClient({
   },
 })
 
-/** The local lab: landing, login, the six areas, backend calls. */
+/** The full site: landing plus the shared lab (no login; the backend picks the workspace). */
 export default function FullApp() {
   return (
     <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <App />
-      </AuthProvider>
+      <LabProvider>
+        <JobTrackerProvider>
+          <App />
+        </JobTrackerProvider>
+      </LabProvider>
     </QueryClientProvider>
   )
 }

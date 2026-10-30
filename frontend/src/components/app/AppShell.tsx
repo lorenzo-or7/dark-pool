@@ -13,19 +13,22 @@ import {
   FlaskConical,
   LayoutDashboard,
   LineChart,
-  LogOut,
   MoreHorizontal,
   Radar,
   Rewind,
   Settings,
+  Users,
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type PointerEvent as RPointerEvent, type ReactNode } from 'react'
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import { EclipseMark } from '@/brand/EclipseMark'
 import { Wordmark } from '@/brand/Wordmark'
-import { useAuth } from '@/auth/AuthProvider'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Spinner } from '@/components/ui/states'
+import { JobDock } from '@/lab/JobTracker'
+import { useLab } from '@/lab/LabProvider'
 import { cn } from '@/lib/utils'
 
 type Item = { to: string; label: string; icon: ReactNode; end?: boolean }
@@ -116,7 +119,7 @@ function SideLink({ item, collapsed, hovered, setHovered }: { item: Item; collap
 }
 
 function Sidebar() {
-  const { me, signOut } = useAuth()
+  const { lab } = useLab()
   const [collapsed, setCollapsed] = useState(() => load(KEY_COLLAPSED, false))
   const [width, setWidth] = useState(() => load(KEY_WIDTH, 248))
   const [hovered, setHovered] = useState<string | null>(null)
@@ -169,19 +172,19 @@ function Sidebar() {
       </nav>
       <div className="border-t border-line p-3" onMouseLeave={() => setHovered(null)}>
         <SideLink item={{ to: '/app/settings', label: 'Configurações', icon: <Settings /> }} collapsed={collapsed} hovered={hovered} setHovered={setHovered} />
-        <div className={cn('mt-2 flex items-center gap-2 rounded-[9px] px-2 py-2', collapsed && 'flex-col')}>
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-raised font-display text-xs text-fg" aria-hidden>
-            {(me?.display_name ?? '?').slice(0, 1).toUpperCase()}
+        <div
+          className={cn('mt-2 flex items-center gap-2 rounded-[9px] px-2 py-2', collapsed && 'justify-center')}
+          title={collapsed ? 'Laboratório compartilhado' : undefined}
+        >
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-raised text-ember [&_svg]:size-4" aria-hidden>
+            <Users />
           </span>
           {!collapsed && (
             <div className="min-w-0 flex-1">
-              <p className="truncate text-[13px] text-fg">{me?.display_name}</p>
-              <p className="truncate text-[11px] text-faint">{me?.role === 'owner' ? 'Proprietário' : 'Membro'}</p>
+              <p className="truncate text-[13px] text-fg">Laboratório compartilhado</p>
+              <p className="truncate text-[11px] text-faint">{lab?.workspace.name ?? 'Workspace público'}</p>
             </div>
           )}
-          <button onClick={() => void signOut()} className="rounded-[7px] p-1.5 text-muted hover:bg-raised hover:text-fg" aria-label="Sair" title="Sair">
-            <LogOut className="size-4" />
-          </button>
         </div>
         <button
           onClick={() => setCollapsed((c) => !c)}
@@ -226,7 +229,6 @@ const mobileMore: Item[] = [
 function MobileNav() {
   const [more, setMore] = useState(false)
   const loc = useLocation()
-  const { signOut } = useAuth()
   const reduce = useReducedMotion()
   useEffect(() => setMore(false), [loc.pathname])
   const moreActive = mobileMore.some((m) => loc.pathname.startsWith(m.to))
@@ -287,10 +289,9 @@ function MobileNav() {
                   {it.label}
                 </NavLink>
               ))}
-              <button onClick={() => void signOut()} className="mt-1 flex h-12 w-full items-center gap-3 rounded-[10px] px-3 text-[15px] text-down [&_svg]:size-5">
-                <LogOut />
-                Sair
-              </button>
+              <p className="mt-2 flex items-center gap-2 border-t border-line px-3 pt-3 text-xs text-faint [&_svg]:size-4">
+                <Users /> Laboratório compartilhado
+              </p>
             </motion.div>
           </>
         )}
@@ -299,8 +300,24 @@ function MobileNav() {
   )
 }
 
+/** Shown instead of a page when the lab cannot be used (no backend, or not configured). */
+function LabUnavailable() {
+  const { error, retry, loading } = useLab()
+  const unconfigured = error?.code === 'public_lab_unconfigured'
+  return (
+    <div className="mx-auto mt-10 max-w-lg panel p-6 text-center" role="alert">
+      <p className="eyebrow">{unconfigured ? 'Configuração pendente' : 'Servidor indisponível'}</p>
+      <h1 className="mt-3 text-xl font-medium text-fg">O laboratório não está disponível agora.</h1>
+      <p className="mt-3 text-sm text-muted">{error?.message}</p>
+      <Button className="mt-5" onClick={retry} disabled={loading}>
+        Tentar de novo
+      </Button>
+    </div>
+  )
+}
+
 export function AppShell() {
-  const { me } = useAuth()
+  const { lab, error, loading } = useLab()
   const loc = useLocation()
   const main = useRef<HTMLElement>(null)
   useEffect(() => {
@@ -316,9 +333,9 @@ export function AppShell() {
             <EclipseMark className="size-7" title="" />
             <Wordmark className="h-[10px] w-auto text-fg" />
           </Link>
-          <p className="hidden truncate text-[13px] text-muted lg:block">{me?.workspace.name}</p>
+          <p className="hidden truncate text-[13px] text-muted lg:block">{lab ? `${lab.workspace.name} · laboratório compartilhado` : ''}</p>
           <div className="flex items-center gap-2">
-            {me?.workspace.is_demo && (
+            {lab?.workspace.is_demo && (
               <Badge tone="caution" title="Workspace local de demonstração, separado do Supabase.">
                 <span className="sm:hidden">Demo</span>
                 <span className="hidden sm:inline">Modo demonstração</span>
@@ -330,10 +347,19 @@ export function AppShell() {
           </div>
         </header>
         <main ref={main} tabIndex={-1} className="flex-1 px-4 pt-6 pb-28 outline-none sm:px-6 lg:px-8 lg:pb-12">
-          <Outlet />
+          {lab ? (
+            <Outlet />
+          ) : error ? (
+            <LabUnavailable />
+          ) : (
+            <div className="flex min-h-[40vh] items-center justify-center">
+              <Spinner label={loading ? 'Abrindo o laboratório' : undefined} />
+            </div>
+          )}
         </main>
       </div>
       <MobileNav />
+      <JobDock />
     </div>
   )
 }

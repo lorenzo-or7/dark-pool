@@ -17,15 +17,21 @@ def settings_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("DP_AUTH_MODE", "demo")
     monkeypatch.setenv("DATABASE_URL", "")
     monkeypatch.setenv("SEC_USER_AGENT", "")
+    # Functional tests run many jobs back to back; the limits have their own tests.
+    monkeypatch.setenv("DP_RATE_LIMIT_JOBS_PER_MIN", "1000")
+    monkeypatch.setenv("DP_RATE_LIMIT_WRITES_PER_MIN", "1000")
+    monkeypatch.setenv("DP_RATE_LIMIT_PER_MIN", "10000")
     _reset()
     yield tmp_path
     _reset()
 
 
 def _reset() -> None:
-    from app import config, db
+    from app import auth, config, db, limits
     from app.services import jobs
     config.get_settings.cache_clear()
+    limits.windows.reset()
+    auth.reset_public_cache()
     db.reset_engine()
     if jobs._pool is not None:
         jobs._pool.shutdown(wait=True)

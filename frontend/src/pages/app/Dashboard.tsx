@@ -2,7 +2,6 @@ import { useQuery } from '@tanstack/react-query'
 import { ArrowUpRight, FlaskConical, Play, Radar } from 'lucide-react'
 import { lazy, Suspense, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useAuth } from '@/auth/AuthProvider'
 import { KpiTile, Sparkline } from '@/components/app/KpiTile'
 import { PageHeader } from '@/components/app/AppShell'
 import { Badge, DataBadge, StatusBadge } from '@/components/ui/badge'
@@ -32,7 +31,6 @@ function greeting() {
 }
 
 export default function Dashboard() {
-  const { me } = useAuth()
   const dash = useQuery({ queryKey: ['dashboard'], queryFn: ({ signal }) => api<Dash>('/dashboard', { signal }), refetchInterval: 15000 })
   const [expId, setExpId] = useState<string | null>(null)
   const [period, setPeriod] = useState<'all' | '6m' | '3m'>('all')
@@ -69,7 +67,7 @@ export default function Dashboard() {
     <div className="mx-auto max-w-[1400px]">
       <PageHeader
         eyebrow={new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' })}
-        title={`${greeting()}, ${me?.display_name ?? ''}`}
+        title={greeting()}
         description="Resumo do laboratório: atividade recente, resultados do backtest selecionado e ativos acompanhados."
       >
         <Button asChild variant="primary">
