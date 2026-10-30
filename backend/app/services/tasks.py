@@ -16,6 +16,7 @@ from ..db import (data_snapshots, experiments, now, scan_runs, simulated_trades,
                   strategy_versions, tx, watchlist_assets)
 from ..engines.runner import last_error_line, run_script
 from . import market_data as md
+from . import providers
 from .backtest import DAILY_RULES, BacktestError, backtest_daily, backtest_orb
 from .jobs import FAILURE_HOOKS, JobContext, JobFailure, handler
 from .metrics import summarize
@@ -27,10 +28,20 @@ def universe_path() -> Path:
     return get_settings().dp_data_dir / "universe" / UNIVERSE_FILE
 
 
+# ---------------------------------------------------------------- shared quota
+
+def _spend(ctx: JobContext, pid: str, cost: int) -> None:
+    try:
+        providers.acquire(pid, cost)
+    except providers.ProviderUnavailable as e:
+        raise JobFailure(e.message, e.code)
+
+
 # ---------------------------------------------------------------- scanner
 
 @handler("scan.universe")
 def scan_universe(ctx: JobContext) -> dict:
+    _spend(ctx, "nasdaq_trader", 2)  # nasdaqlisted.txt and otherlisted.txt
     ctx.progress(10, "Baixando diretórios da Nasdaq Trader")
     out = universe_path()
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -60,6 +71,8 @@ def scan_daily(ctx: JobContext) -> dict:
             raise JobFailure("Nenhum ticker para analisar.")
         args += ["--symbols", ",".join(syms)]
         n = len(syms)
+    # The scanner reads Yahoo's spark endpoint itself, 20 symbols per request.
+    _spend(ctx, "yahoo", (n + 19) // 20)
     with tx(ctx.user.id, ctx.user.email) as conn:
         conn.execute(update(scan_runs).where(scan_runs.c.id == scan_id).values(status="running"))
     ctx.progress(5, f"Buscando fechamentos diários de {n} ativos ({(n + 19) // 20} requisições)")
@@ -209,8 +222,7 @@ def timemachine_run(ctx: JobContext) -> dict:
         "verdict": doc.get("verdict"), "verdict_notes": doc.get("verdict_notes") or [],
         "warnings": doc.get("warnings") or [], "note": doc.get("note"), "data": doc.get("data"),
         "history_summary": summarize(trades),
-        "snapshot": {"id": str(snap["id"]), "sha256": snap["sha256"], "source": snap["source"],
-                     "fetched_at": _iso(snap["fetched_at"]), "is_fixture": bool(snap.get("is_fixture"))},
+        "snapshot": _snapshot_ref(snap),
         "algorithm_version": ENGINE_VERSION + " / timemachine",
         "limitations": [
             "Simulação construída a partir das sessões recentes do próprio ativo. Não é previsão.",
@@ -234,6 +246,14 @@ def timemachine_run(ctx: JobContext) -> dict:
 
 
 FAILURE_HOOKS["timemachine.run"] = _experiment_failed
+
+
+def _snapshot_ref(snap: dict) -> dict:
+    """What a result records about its data: the frozen payload (content hash) and its origin."""
+    fx = bool(snap.get("is_fixture"))
+    return {"id": str(snap["id"]), "sha256": snap["sha256"], "source": snap["source"],
+            "fetched_at": _iso(snap["fetched_at"]), "is_fixture": fx,
+            "provenance": providers.provenance_for_source(snap["source"], fx)}
 
 
 def _iso(d) -> str | None:  # noqa: ANN001
@@ -278,8 +298,7 @@ def backtest_run(ctx: JobContext) -> dict:
         summary["development"] = summarize([t for t in trades if t["dataset"] == "development"])
         summary["out_of_sample"] = summarize([t for t in trades if t["dataset"] == "out_of_sample"])
     results = {**out, "summary": summary, "config": cfg, "algorithm_version": "darkpool-backtest 0.1 / " + ENGINE_VERSION,
-               "snapshot": {"id": str(snap["id"]), "sha256": snap["sha256"], "source": snap["source"],
-                            "fetched_at": _iso(snap["fetched_at"]), "is_fixture": bool(snap.get("is_fixture"))}}
+               "snapshot": _snapshot_ref(snap)}
     with tx(ctx.user.id, ctx.user.email) as conn:
         _store_trades(conn, ctx, exp_id, symbol, "backtest", trades)
         conn.execute(update(experiments).where(experiments.c.id == exp_id).values(

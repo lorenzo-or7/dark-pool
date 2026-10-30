@@ -44,7 +44,7 @@ export default function Dashboard() {
   const symbols = wl.data?.[0]?.assets.map((a) => a.symbol).slice(0, 8) ?? []
   const quotes = useQuery({
     queryKey: ['quotes', symbols.join(',')],
-    queryFn: ({ signal }) => api<{ quotes: Quote[]; errors: { symbol: string; message: string }[] }>(`/quotes?symbols=${symbols.join(',')}`, { signal }),
+    queryFn: ({ signal }) => api<{ quotes: Quote[]; errors: { symbol: string; message: string }[]; prices_hidden?: boolean }>(`/quotes?symbols=${symbols.join(',')}`, { signal }),
     enabled: symbols.length > 0,
     staleTime: 120_000,
   })
@@ -294,6 +294,9 @@ export default function Dashboard() {
                   ))}
                 </tbody>
               </table>
+              {quotes.data?.prices_hidden && (
+                <p className="mt-2 text-xs text-muted">Último preço e gráfico de 1 mês ocultos pela política de exibição do laboratório público. A variação do dia é um cálculo do servidor.</p>
+              )}
               {quotes.data && quotes.data.errors.length > 0 && (
                 <p className="mt-2 text-xs text-caution">Sem dados para: {quotes.data.errors.map((e) => e.symbol).join(', ')}.</p>
               )}

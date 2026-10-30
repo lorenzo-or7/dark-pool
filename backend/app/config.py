@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -79,6 +79,17 @@ class Settings(BaseSettings):
     # SEC asks for "Name email" in the User-Agent. Needed by News (8-K) and Analyst.
     sec_user_agent: str = ""
 
+    # Alpaca Market Data (Basic plan, IEX feed). Server only, never sent to the browser.
+    alpaca_api_key_id: str = ""
+    alpaca_api_secret_key: str = ""
+
+    # Display policy (see services/policy.py). Empty = the default for the mode: everything
+    # visible in the local demo, restrictive in the public lab. Applied by the API, not the UI.
+    dp_show_raw_prices: bool | None = None          # OHLCV, quotes and price series
+    dp_show_trigger_prices: bool | None = None      # the price on a signal (kept for the next blocks)
+    dp_pelosi_public: bool = False                  # waits for the legal review of 5 U.S.C. 13107
+    dp_allow_unofficial_sources: bool | None = None  # Yahoo Finance (unofficial; terms forbid automated use)
+
     @property
     def is_demo(self) -> bool:
         return self.dp_auth_mode == "demo"
@@ -86,6 +97,30 @@ class Settings(BaseSettings):
     @property
     def is_public(self) -> bool:
         return self.dp_auth_mode == "public"
+
+    @field_validator("dp_show_raw_prices", "dp_show_trigger_prices", "dp_allow_unofficial_sources",
+                     "dp_pelosi_public", mode="before")
+    @classmethod
+    def _blank_is_default(cls, v: object, info) -> object:  # noqa: ANN001
+        """An empty line in .env (as in .env.example) means "use the mode's default"."""
+        if isinstance(v, str) and not v.strip():
+            return False if info.field_name == "dp_pelosi_public" else None
+        return v
+
+    def _policy(self, value: bool | None) -> bool:
+        return (not self.is_public) if value is None else value
+
+    @property
+    def show_raw_prices(self) -> bool:
+        return self._policy(self.dp_show_raw_prices)
+
+    @property
+    def show_trigger_prices(self) -> bool:
+        return self._policy(self.dp_show_trigger_prices)
+
+    @property
+    def allow_unofficial_sources(self) -> bool:
+        return self._policy(self.dp_allow_unofficial_sources)
 
     @property
     def storage_backend(self) -> str:

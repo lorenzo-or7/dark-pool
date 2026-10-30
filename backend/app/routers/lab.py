@@ -23,6 +23,8 @@ from ..schemas import (BacktestRequest, OrbPlanRequest, RiskCheckRequest, Strate
 from ..services import jobs as jobsvc
 from ..services import market_calendar as mcal
 from ..services import market_data as md
+from ..services import policy
+from ..services import providers as prov
 from ..services.backtest import RULE_LABELS
 from ..services.metrics import summarize
 from ..services.tasks import strategy_config
@@ -154,6 +156,16 @@ def _submit_experiment(user: CurrentUser, job_type: str, kind: str, title: str, 
     return {"job": ser(job), "created": was_created, "experiment_id": job["params"]["experiment_id"]}
 
 
+def _new_data_allowed(snapshot_id: uuid.UUID | None) -> None:
+    """A run without a snapshot downloads data: refuse it up front if the source is off."""
+    if snapshot_id is not None:
+        return
+    try:
+        prov.check_allowed(md.PROVIDER_ID)
+    except prov.ProviderUnavailable as e:
+        raise HTTPException(503, {"code": e.code, "message": e.message + " Use um snapshot já salvo."})
+
+
 def _engine_day(d: dt.date) -> None:
     """Refuse, before any job or engine call, a day the engines cannot place on the NYSE calendar."""
     try:
@@ -168,6 +180,7 @@ def run_timemachine(body: TimeMachineRequest, user: CurrentUser = Depends(curren
     if body.strategy_id is not None:
         with tx(user.id, user.email) as conn:
             _get_strategy(conn, user, body.strategy_id)  # 404 unless it belongs to this lab
+    _new_data_allowed(body.snapshot_id)
     params = body.model_dump(mode="json", exclude={"title"})
     title = body.title or (f"Time Machine · {body.symbol} {body.date.isoformat()} {body.entry_time} · "
                            f"{body.replays:,} replays · seed {body.seed}").replace(",", ".")
@@ -182,6 +195,7 @@ def run_backtest(body: BacktestRequest, user: CurrentUser = Depends(current_user
             cfg, version, name = strategy_config(conn, user.workspace_id, body.strategy_id, body.version)
         except LookupError:
             raise not_found("Estratégia ou versão")
+    _new_data_allowed(body.snapshot_id)
     params = {"strategy_id": str(body.strategy_id), "version": version, "config": cfg, "range": body.range,
               "snapshot_id": str(body.snapshot_id) if body.snapshot_id else None,
               "split_date": body.split_date.isoformat() if body.split_date else None}
@@ -216,7 +230,11 @@ def get_experiment(eid: uuid.UUID, user: CurrentUser = Depends(current_user)) ->
         sim = conn.execute(select(simulation_runs).where(simulation_runs.c.experiment_id == eid)).mappings().first()
         trades = rows(conn.execute(select(simulated_trades).where(simulated_trades.c.experiment_id == eid)
                                    .order_by(simulated_trades.c.entry_date, simulated_trades.c.entry_time)))
-    return {**ser(dict(e)), "simulation": ser(dict(sim)) if sim else None, "trades": trades}
+    out = {**ser(dict(e)), "simulation": ser(dict(sim)) if sim else None, "trades": trades}
+    snap = (out.get("results") or {}).get("snapshot") if isinstance(out.get("results"), dict) else None
+    if isinstance(snap, dict) and "provenance" not in snap:  # results saved before provenance existed
+        snap["provenance"] = prov.provenance_for_source(snap.get("source"), bool(snap.get("is_fixture")))
+    return out
 
 
 @router.delete("/experiments/{eid}", status_code=204)
@@ -359,6 +377,7 @@ def snapshot_sessions(sid: uuid.UUID, user: CurrentUser = Depends(current_user))
 
 @router.get("/snapshots/{sid}/bars")
 def snapshot_bars(sid: uuid.UUID, date: dt.date, user: CurrentUser = Depends(current_user)) -> dict:
+    policy.require_raw_prices()
     s, chart = _snapshot(user, sid)
     bars = _session_bars(chart).get(date.isoformat())
     if not bars:

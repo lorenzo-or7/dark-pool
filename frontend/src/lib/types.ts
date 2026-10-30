@@ -236,4 +236,6 @@ export type Quote = {
   spark: number[]
   as_of: string | null
   fetched_at: string
+  /** true when the display policy hid last, volume, avg_volume and spark */
+  prices_hidden?: boolean
 }

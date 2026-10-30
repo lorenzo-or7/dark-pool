@@ -28,8 +28,9 @@ def settings_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def _reset() -> None:
     from app import auth, config, db, limits
-    from app.services import jobs
+    from app.services import jobs, providers
     config.get_settings.cache_clear()
+    providers.reset()
     limits.windows.reset()
     auth.reset_public_cache()
     db.reset_engine()

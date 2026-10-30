@@ -21,8 +21,10 @@ from sqlalchemy import Connection, select
 
 from ..config import get_settings
 from ..db import data_snapshots, new_id, now
+from . import providers
 
 SOURCE = "yahoo"
+PROVIDER_ID = "yahoo"
 SOURCE_LABEL = "Yahoo Finance (API não oficial, cotações com atraso)"
 UA = "Mozilla/5.0 (compatible; DARK-POOL/0.1; research lab)"
 HOSTS = ("https://query2.finance.yahoo.com", "https://query1.finance.yahoo.com")
@@ -65,29 +67,50 @@ def _polite() -> None:
         _last_call = time.monotonic()
 
 
+def _provider_error(e: "providers.ProviderUnavailable") -> DataError:
+    return DataError(e.code, e.message)
+
+
 def fetch_chart_raw(symbol: str, rng: str, interval: str, use_cache: bool = True) -> tuple[str, datetime, bool]:
-    """-> (raw JSON text, fetched_at UTC, from_cache)."""
+    """-> (raw JSON text, fetched_at UTC, from_cache). Goes through the provider policy and quota."""
     symbol = clean_symbol(symbol)
     if (rng, interval) not in ALLOWED:
         raise DataError("invalid_range", f"Combinação de período/intervalo não suportada: {rng}/{interval}")
+    try:
+        providers.check_allowed(PROVIDER_ID)
+    except providers.ProviderUnavailable as e:
+        raise _provider_error(e)
     cache = _cache_dir() / f"{symbol}-{rng}-{interval}.json"
     if use_cache and cache.exists() and time.time() - cache.stat().st_mtime < TTL[interval]:
         return cache.read_text(encoding="utf-8"), datetime.fromtimestamp(cache.stat().st_mtime, UTC), True
+    # Identical downloads in progress (two visitors, or a page and a job) are made once.
+    return providers.single_flight((PROVIDER_ID, symbol, rng, interval),
+                                   lambda: _download(symbol, rng, interval, cache))
+
+
+def _download(symbol: str, rng: str, interval: str, cache: Path) -> tuple[str, datetime, bool]:
     ysym = symbol.replace(".", "-")
     last_status: int | None = None
     for host in HOSTS:
         for attempt in (0, 1):
+            try:
+                providers.acquire(PROVIDER_ID)
+            except providers.ProviderUnavailable as e:
+                raise _provider_error(e)
             _polite()
             url = f"{host}/v8/finance/chart/{ysym}"
             try:
                 r = httpx.get(url, params={"range": rng, "interval": interval, "includePrePost": "false"},
                               headers={"User-Agent": UA, "Accept": "application/json"}, timeout=20)
             except httpx.TimeoutException:
+                providers.failure(PROVIDER_ID)
                 raise DataError("provider_timeout", "O provedor de dados não respondeu a tempo.")
             except httpx.HTTPError as e:
-                raise DataError("provider_unreachable", f"Não foi possível acessar o provedor de dados: {e}")
+                providers.failure(PROVIDER_ID)
+                raise DataError("provider_unreachable", f"Não foi possível acessar o provedor de dados: {type(e).__name__}")
             last_status = r.status_code
             if r.status_code == 200:
+                providers.success(PROVIDER_ID)
                 cache.write_text(r.text, encoding="utf-8")
                 return r.text, now(), False
             if r.status_code == 404:
@@ -97,7 +120,9 @@ def fetch_chart_raw(symbol: str, rng: str, interval: str, use_cache: bool = True
                 continue
             break
     if last_status == 429:
+        providers.failure(PROVIDER_ID, "rate_limited")
         raise DataError("rate_limited", "O provedor está limitando requisições (HTTP 429). Tente em um minuto.")
+    providers.failure(PROVIDER_ID)
     raise DataError("provider_error", f"O provedor respondeu HTTP {last_status}.")
 
 
@@ -149,6 +174,7 @@ def provenance(chart: Chart, fetched_at: datetime, from_cache: bool, interval: s
         "timezone": m.get("exchangeTimezoneName") or "America/New_York",
         "delayed": True,
         "note": "Dados gratuitos com atraso. Não são cotações em tempo real.",
+        **{k: v for k, v in providers.provenance_for_source(SOURCE).items() if k != "is_fixture"},
     }
 
 

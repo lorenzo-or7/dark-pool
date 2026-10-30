@@ -53,3 +53,45 @@ o Time Machine guarda só os fechamentos antecipados), com 2026 e 2027. Para nã
 
 `exchange_calendars` depende de `pandas` e `numpy`. Eles só são importados na primeira consulta
 ao calendário, mas aumentam o tempo de instalação e o uso de memória no Render gratuito (512 MB).
+
+---
+
+## Política de exibição (Bloco 2)
+
+Código: `backend/app/services/policy.py`. Configuração compartilhada, aplicada pela API.
+
+| Variável | Padrão no `demo` | Padrão no `public` | Efeito quando desligada |
+|---|---|---|---|
+| `DP_SHOW_RAW_PRICES` | ligada | desligada | `/api/assets/{s}/chart` e `/api/snapshots/{id}/bars` respondem 403 `display_policy`; `/api/quotes` devolve `last`, `volume`, `avg_volume` nulos e `spark` vazio (mantém variação do dia e volatilidade); resultados de varredura sem `price` e `volume` |
+| `DP_SHOW_TRIGGER_PRICES` | ligada | desligada | Ainda sem efeito nas rotas: ocultar o preço do gatilho exige refazer o fluxo do Time Machine (proposta pendente de aprovação) |
+| `DP_PELOSI_PUBLIC` | desligada | desligada | Reservada para o Bloco 10 |
+| `DP_ALLOW_UNOFFICIAL_SOURCES` | ligada | desligada | Yahoo recusado com 503 `source_disabled`: gráficos, cotações, notícias, varreduras e Time Machine/backtest sem snapshot. Snapshots já salvos continuam utilizáveis |
+
+Linha em branco no `.env` = padrão do modo.
+
+## Cotas compartilhadas e circuit breaker
+
+Código: `backend/app/services/providers.py`. Estado em memória do processo (uma instância no Render
+gratuito); um reinício zera os contadores.
+
+| Provedor | Limite local por minuto | Por dia | Limite publicado |
+|---|---|---|---|
+| Yahoo Finance | 60 | 3.000 | não publicado |
+| SEC EDGAR | 300 | 20.000 | 10 por segundo |
+| Nasdaq Trader | 6 | 60 | não publicado |
+| Alpaca (Bloco 3) | 150 | sem limite local | 200 por minuto |
+
+- HTTP 429 pausa o provedor por 120 s; três falhas seguidas pausam por 30 s (`provider_paused`).
+- Downloads idênticos em andamento são feitos uma vez e compartilhados (single-flight).
+- Chamadas que os motores fazem sozinhos (scanner, news, analyst, universo) são cobradas antes de
+  rodar, por estimativa: scanner diário = 1 por 20 ativos; news = 1 Yahoo + 2 SEC; analyst = 4 SEC;
+  universo = 2 Nasdaq Trader.
+- Estado e uso aparecem em Configurações → Fontes de dados, sem chaves.
+
+## Proveniência
+
+- `providers.provenance_for_source()` descreve a origem de um snapshot a partir do campo `source`:
+  provedor, tipo (oficial, não oficial, biblioteca, comercial), atraso, termos, atribuição e se é fixture.
+- O hash do snapshot continua sendo o do conteúdo baixado. A proveniência fica ao lado, em
+  `results.snapshot.provenance` de cada experimento; experimentos antigos recebem o campo na leitura.
+- Execuções feitas com Yahoo continuam identificadas como Yahoo.

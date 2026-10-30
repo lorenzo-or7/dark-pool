@@ -11,7 +11,7 @@ from ..db import (data_snapshots, experiments, jobs, profiles, scan_runs, strate
                   workspaces)
 from ..engines.runner import script_path
 from ..schemas import ProfileUpdate
-from ..services import storage
+from ..services import policy, providers, storage
 from ..services.tasks import universe_path
 from .common import audit, rows, ser
 
@@ -93,6 +93,12 @@ def update_me(body: ProfileUpdate, user: CurrentUser = Depends(current_user)) ->
     return me(user)
 
 
+def _data_sources(last_snap, universe) -> list[dict]:  # noqa: ANN001
+    """Every provider's state for the Settings page. Never keys, hosts or account details."""
+    last = {"yahoo": ser(last_snap), "nasdaq_trader": ser(_mtime(universe)) if universe.exists() else None}
+    return [{**p, "last_fetch": last.get(p["id"], p["last_success"])} for p in providers.status()]
+
+
 @router.get("/workspace")
 def workspace(user: CurrentUser = Depends(current_user)) -> dict:
     s = get_settings()
@@ -113,15 +119,8 @@ def workspace(user: CurrentUser = Depends(current_user)) -> dict:
         ws = {k: ws[k] for k in ("id", "name", "is_demo", "created_at")}
     return {
         "workspace": ser(dict(ws)) if ws else None, "members": members, "shared": s.is_public,
-        "data_sources": [
-            {"name": "Yahoo Finance (chart)", "use": "Candles, cotações com atraso, snapshots", "status": "configurado",
-             "last_fetch": ser(last_snap)},
-            {"name": "Nasdaq Trader SymDir", "use": "Universo de ações do Market Scanner",
-             "status": "baixado" if u.exists() else "não baixado",
-             "last_fetch": ser(_mtime(u)) if u.exists() else None},
-            {"name": "SEC EDGAR", "use": "8-K (notícias) e resultados (Analyst)",
-             "status": "configurado" if s.sec_user_agent else "requer SEC_USER_AGENT", "last_fetch": None},
-        ],
+        "data_sources": _data_sources(last_snap, u),
+        "display_policy": policy.summary(),
         "version": {"app": APP_VERSION, "engine": ENGINE_VERSION, "mode": s.dp_auth_mode,
                     "database": "postgres" if s.is_postgres else "sqlite"},
     }

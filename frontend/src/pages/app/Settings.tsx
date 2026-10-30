@@ -9,10 +9,48 @@ import { api } from '@/lib/api'
 import { localDateTime, shortDate } from '@/lib/format'
 import { loadPrefs, savePrefs, type Prefs } from '@/lib/prefs'
 
+type DataSource = {
+  id?: string
+  name: string
+  use: string
+  status: string
+  tone?: 'up' | 'caution' | 'down'
+  kind?: 'official' | 'unofficial' | 'library' | 'commercial'
+  delay?: string
+  terms_url?: string | null
+  published_limit?: string
+  usage?: { minute: number; per_minute: number | null; today: number; per_day: number | null }
+  last_fetch: string | null
+}
+
+type DisplayPolicy = {
+  shared: boolean
+  show_raw_prices: boolean
+  show_trigger_prices: boolean
+  pelosi_public: boolean
+  allow_unofficial_sources: boolean
+  note: string | null
+}
+
+const KIND_LABEL: Record<string, string> = { official: 'oficial', unofficial: 'não oficial', library: 'cálculo local', commercial: 'comercial' }
+
+function PolicyRow({ label, on, detail }: { label: string; on: boolean; detail: string }) {
+  return (
+    <li className="flex flex-col gap-1 px-3 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <p className="text-fg">{label}</p>
+        <p className="text-xs text-muted">{detail}</p>
+      </div>
+      <Badge tone={on ? 'up' : 'caution'} className="self-start sm:self-auto">{on ? 'exibido' : 'oculto'}</Badge>
+    </li>
+  )
+}
+
 type Ws = {
   workspace: { id: string; name: string; is_demo: boolean; created_at: string }
   shared?: boolean
-  data_sources: { name: string; use: string; status: string; last_fetch: string | null }[]
+  data_sources: DataSource[]
+  display_policy?: DisplayPolicy
   version: { app: string; engine: string; mode: string; database: string }
 }
 
@@ -112,22 +150,57 @@ export default function Settings() {
         )}
       </Section>
 
-      <Section id="fontes" title="Fontes de dados" description="Origem de cada número exibido no laboratório.">
+      <Section
+        id="politica"
+        title="Política de exibição"
+        description="Configuração compartilhada, definida no servidor. Vale para todos os visitantes e não muda por navegador."
+      >
+        {ws.data?.display_policy ? (
+          <>
+            <ul className="divide-y divide-line rounded-[var(--radius-md)] border border-line">
+              <PolicyRow label="Preços e candles brutos" on={ws.data.display_policy.show_raw_prices} detail="Cotações, gráficos de candles e séries de preço." />
+              <PolicyRow label="Preço do gatilho nos sinais" on={ws.data.display_policy.show_trigger_prices} detail="Aguarda confirmação por escrito do provedor de dados." />
+              <PolicyRow label="Divulgações do Congresso (Pelosi)" on={ws.data.display_policy.pelosi_public} detail="Aguarda parecer jurídico sobre a 5 U.S.C. §13107." />
+              <PolicyRow label="Fontes não oficiais (Yahoo)" on={ws.data.display_policy.allow_unofficial_sources} detail="Os termos do Yahoo não permitem coleta automatizada em site público." />
+            </ul>
+            {ws.data.display_policy.note && <p className="mt-2 text-xs text-faint">{ws.data.display_policy.note}</p>}
+          </>
+        ) : ws.isLoading ? (
+          <Skeleton className="h-24" />
+        ) : null}
+      </Section>
+
+      <Section id="fontes" title="Fontes de dados" description="Origem de cada número usado no laboratório, estado atual e uso da cota compartilhada.">
         <ul className="divide-y divide-line rounded-[var(--radius-md)] border border-line">
           {(ws.data?.data_sources ?? []).map((d) => (
-            <li key={d.name} className="flex flex-col gap-1 px-3 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-fg">{d.name}</p>
+            <li key={d.id ?? d.name} className="flex flex-col gap-1 px-3 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <p className="text-fg">
+                  {d.name} {d.kind && <span className="text-xs text-faint">· {KIND_LABEL[d.kind] ?? d.kind}</span>}
+                </p>
                 <p className="text-xs text-muted">{d.use}</p>
+                {d.delay && <p className="text-[11px] text-faint">{d.delay}</p>}
+                {d.terms_url && (
+                  <a href={d.terms_url} target="_blank" rel="noreferrer" className="text-[11px] text-faint underline hover:text-ember">
+                    termos de uso
+                  </a>
+                )}
               </div>
-              <div className="text-left sm:text-right">
-                <Badge tone={d.status.startsWith('requer') || d.status.startsWith('não') ? 'caution' : 'up'}>{d.status}</Badge>
+              <div className="shrink-0 text-left sm:text-right">
+                <Badge tone={d.tone ?? (d.status.startsWith('requer') || d.status.startsWith('não') ? 'caution' : 'up')}>{d.status}</Badge>
+                {d.usage && (d.usage.per_minute != null || d.usage.per_day != null) && (
+                  <p className="num mt-1 text-[11px] text-faint">
+                    {d.usage.per_minute != null && `${d.usage.minute}/${d.usage.per_minute} por min`}
+                    {d.usage.per_minute != null && d.usage.per_day != null && ' · '}
+                    {d.usage.per_day != null && `${d.usage.today}/${d.usage.per_day} hoje`}
+                  </p>
+                )}
                 <p className="mt-1 text-[11px] text-faint">{d.last_fetch ? `última coleta ${localDateTime(d.last_fetch)}` : 'sem coleta registrada'}</p>
               </div>
             </li>
           ))}
         </ul>
-        <p className="mt-2 text-xs text-faint">Cotações gratuitas têm atraso e não são tempo real.</p>
+        <p className="mt-2 text-xs text-faint">Cotações gratuitas têm atraso e não são tempo real. As cotas são compartilhadas por todos os visitantes e voltam a zero quando o servidor reinicia.</p>
       </Section>
 
       <Section id="versao" title="Versão">

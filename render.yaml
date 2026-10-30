@@ -31,6 +31,10 @@ services:
         sync: false
       - key: SEC_USER_AGENT
         sync: false
+      - key: ALPACA_API_KEY_ID
+        sync: false
+      - key: ALPACA_API_SECRET_KEY
+        sync: false
       - key: DP_TRUSTED_PROXY_HOPS
         value: "1"
       - key: DP_JOB_WORKERS

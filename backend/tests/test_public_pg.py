@@ -102,6 +102,7 @@ def lab(pgdb: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator
     monkeypatch.setenv("DP_RATE_LIMIT_JOBS_PER_MIN", "1000")
     monkeypatch.setenv("DP_RATE_LIMIT_WRITES_PER_MIN", "1000")
     monkeypatch.setenv("DP_RATE_LIMIT_PER_MIN", "10000")
+    monkeypatch.setenv("DP_ALLOW_UNOFFICIAL_SOURCES", "true")  # job tests use the offline Yahoo stub
     _reset()
     from app.services.public_lab import setup_public_lab
     setup_public_lab(LAB_WS)

@@ -38,7 +38,8 @@ type ChartRes = {
   warnings: string[]
 }
 
-type Hit = { symbol: string; setups: string[]; price: number; close_date: string; rsi: number | null; volume: number }
+// price and volume are null when the lab's display policy hides raw prices (public lab).
+type Hit = { symbol: string; setups: string[]; price: number | null; close_date: string; rsi: number | null; volume: number | null }
 type ScanRow = {
   id: string
   status: string
@@ -57,6 +58,7 @@ type ScanRow = {
     partial: boolean
     criteria: Record<string, string>
     filters: { min_price: number; min_volume: number }
+    prices_hidden?: boolean
   }
 }
 
@@ -421,8 +423,7 @@ function ScanPanel({ watchlists, onPick, picked }: { watchlists: Watchlist[]; on
     const q = filter.trim().toUpperCase()
     return (res?.hits ?? []).filter(
       (h) =>
-        h.price >= price[0] &&
-        h.price <= price[1] &&
+        (h.price == null || (h.price >= price[0] && h.price <= price[1])) &&
         (h.rsi == null || (h.rsi >= rsi[0] && h.rsi <= rsi[1])) &&
         (setup === 'all' || h.setups.includes(setup)) &&
         (!q || h.symbol.includes(q)),
@@ -464,9 +465,9 @@ function ScanPanel({ watchlists, onPick, picked }: { watchlists: Watchlist[]; on
         </span>
       ),
     },
-    { key: 'price', header: 'Preço', align: 'right', sort: (h) => h.price, cell: (h) => <span className="num">{fmt.num(h.price)}</span> },
+    { key: 'price', header: 'Preço', align: 'right', sort: (h) => h.price ?? -1, cell: (h) => <span className="num">{fmt.num(h.price)}</span> },
     { key: 'rsi', header: 'RSI 14', align: 'right', sort: (h) => h.rsi, cell: (h) => <span className="num">{fmt.num(h.rsi, 1)}</span> },
-    { key: 'volume', header: 'Volume', align: 'right', sort: (h) => h.volume, cell: (h) => <span className="num">{fmt.compact(h.volume)}</span> },
+    { key: 'volume', header: 'Volume', align: 'right', sort: (h) => h.volume ?? -1, cell: (h) => <span className="num">{fmt.compact(h.volume)}</span> },
     {
       key: 'vol',
       header: 'Volatil. diária',
@@ -598,6 +599,7 @@ function ScanPanel({ watchlists, onPick, picked }: { watchlists: Watchlist[]; on
               </span>
               <span>{relative(scan.data.created_at)}</span>
               {res.partial && <Badge tone="caution">Resultado parcial</Badge>}
+              {res.prices_hidden && <Badge tone="caution">Preço e volume ocultos pela política de exibição</Badge>}
             </div>
             <DataTable
               rows={hits}

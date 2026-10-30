@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import delete, desc, func, select, update
 
@@ -23,6 +23,8 @@ from ..schemas import ScanRequest, WatchlistAssetAdd, WatchlistCreate
 from ..services import indicators as ind
 from ..services import jobs as jobsvc
 from ..services import market_calendar as mcal
+from ..services import policy
+from ..services import providers as prov
 from ..services import market_data as md
 from ..services.tasks import universe_path, watchlist_symbols
 from .common import audit, bad_request, not_found, rows, ser
@@ -30,9 +32,22 @@ from .common import audit, bad_request, not_found, rows, ser
 router = APIRouter(prefix="/api", dependencies=[Depends(current_user)])
 
 
-def _err(e: md.DataError) -> JSONResponse:
-    code = {"invalid_symbol": 400, "invalid_range": 400, "unknown_symbol": 404, "rate_limited": 429}.get(e.code, 502)
-    return JSONResponse({"detail": {"code": e.code, "message": e.message}}, status_code=code)
+ERROR_STATUS = {"invalid_symbol": 400, "invalid_range": 400, "unknown_symbol": 404, "rate_limited": 429,
+                "quota_exhausted": 429, "source_disabled": 503, "provider_paused": 503, "missing_key": 503,
+                "not_integrated": 503}
+
+
+def _err(e: md.DataError | prov.ProviderUnavailable) -> JSONResponse:
+    return JSONResponse({"detail": {"code": e.code, "message": e.message}}, status_code=ERROR_STATUS.get(e.code, 502))
+
+
+def _spend(pid: str, cost: int = 1) -> JSONResponse | None:
+    """Spend shared quota before a call an engine makes on its own; a refusal as a response."""
+    try:
+        prov.acquire(pid, cost)
+    except prov.ProviderUnavailable as e:
+        return _err(e)
+    return None
 
 
 # ---------------------------------------------------------------- NYSE calendar
@@ -92,6 +107,7 @@ def search_assets(q: str = Query(min_length=1, max_length=40), limit: int = Quer
 
 @router.get("/assets/{symbol}/chart")
 def asset_chart(symbol: str, range: Literal["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y"] = "6mo"):  # noqa: A002
+    policy.require_raw_prices()
     interval = "5m" if range in ("1d", "5d") else "1wk" if range == "5y" else "1d"
     try:
         text, fetched, cached = md.fetch_chart_raw(symbol, range, interval)
@@ -151,13 +167,14 @@ def quotes(symbols: str = Query(min_length=1, max_length=400)) -> dict:
         rets = [closes[i] / closes[i - 1] - 1 for i in range(1, len(closes))]
         mean = sum(rets) / len(rets) if rets else 0
         vol_pct = (sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)) ** 0.5 * 100 if len(rets) > 2 else None
-        out.append({"symbol": s, "name": ch.meta.get("shortName") or ch.meta.get("longName"), "last": last,
+        out.append(policy.redact_quote({"symbol": s, "name": ch.meta.get("shortName") or ch.meta.get("longName"), "last": last,
                     "change_pct": round((closes[-1] / prev - 1) * 100, 3) if prev else None,
                     "volume": vol[-1] if vol else None, "avg_volume": round(sum(vol) / len(vol)) if vol else None,
                     "volatility_pct": round(vol_pct, 3) if vol_pct is not None else None,
                     "spark": closes[-22:], "as_of": md.provenance(ch, fetched, cached, "1d")["last_bar_time"],
-                    "fetched_at": fetched.isoformat()})
-    return {"quotes": out, "errors": errors, "source": md.SOURCE_LABEL, "delayed": True}
+                    "fetched_at": fetched.isoformat()}))
+    return {"quotes": out, "errors": errors, "source": md.SOURCE_LABEL, "delayed": True,
+            "prices_hidden": not get_settings().show_raw_prices}
 
 
 _inline_engines: threading.BoundedSemaphore | None = None
@@ -195,6 +212,11 @@ def asset_news(symbol: str):
     except md.DataError as e:
         return _err(e)
     ua = get_settings().sec_user_agent
+    # The engine reads Yahoo's headline RSS (1 request) and, with a User-Agent, SEC's 8-K feed
+    # (ticker list + feed). The quota is spent here because the engine calls them itself.
+    refused = _spend("yahoo") or (_spend("sec_edgar", 2) if ua else None)
+    if refused:
+        return refused
     args = ["--tickers", sym, "--json", "--dry-run", "--no-moves", "--all", "--hours", "168",
             "--state", "state.json", "--watchlist", "none.json", "--plan", "none.json", "--portfolio", "none.json"]
     if not ua:
@@ -218,6 +240,9 @@ def asset_fundamentals(symbol: str):
         return JSONResponse({"detail": {"code": "sec_user_agent_missing",
                                         "message": "A SEC exige SEC_USER_AGENT (nome e e-mail) no backend."}},
                             status_code=424)
+    refused = _spend("sec_edgar", 4)  # ticker list, company facts, submissions, filing index
+    if refused:
+        return refused
     r = _engine_json("analyst", [sym, "--json", "--quarters", "6"], {"SEC_USER_AGENT": ua})
     if not r["ok"]:
         return JSONResponse({"detail": {"code": r["code"], "message": r["message"]}},
@@ -240,6 +265,10 @@ def create_scan(body: ScanRequest, user: CurrentUser = Depends(current_user)) ->
         params["source"] = "symbols"
     elif body.source == "symbols" and not body.symbols:
         raise bad_request("Informe ao menos um ticker.")
+    try:
+        prov.check_allowed("yahoo")  # the daily scan reads Yahoo's spark endpoint
+    except prov.ProviderUnavailable as e:
+        raise HTTPException(ERROR_STATUS[e.code], {"code": e.code, "message": e.message})
     scan_id = new_id()
     params["scan_id"] = str(scan_id)
     dedupe = {k: v for k, v in params.items() if k != "scan_id"}
@@ -271,7 +300,9 @@ def get_scan(scan_id: uuid.UUID, user: CurrentUser = Depends(current_user)) -> d
                                                  scan_runs.c.workspace_id == user.workspace_id)).mappings().first()
     if r is None:
         raise not_found("Varredura")
-    return ser(dict(r))
+    out = ser(dict(r))
+    out["result"] = policy.redact_scan_result(out.get("result"))
+    return out
 
 
 # ---------------------------------------------------------------- watchlists

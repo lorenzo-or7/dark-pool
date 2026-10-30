@@ -38,6 +38,9 @@ def public(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[Te
     monkeypatch.setenv("DP_RATE_LIMIT_JOBS_PER_MIN", "1000")
     monkeypatch.setenv("DP_RATE_LIMIT_WRITES_PER_MIN", "1000")
     monkeypatch.setenv("DP_RATE_LIMIT_PER_MIN", "10000")
+    # These tests exercise jobs with the offline Yahoo stub; the default policy (Yahoo off in
+    # the public lab) has its own tests in test_policy.py.
+    monkeypatch.setenv("DP_ALLOW_UNOFFICIAL_SOURCES", "true")
     _reset()
     from app.services.public_lab import setup_public_lab
     setup_public_lab(ws)
