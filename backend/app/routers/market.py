@@ -3,6 +3,7 @@ news and fundamentals, scans and watchlists."""
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import tempfile
 import threading
@@ -21,6 +22,7 @@ from ..engines.runner import EngineTimeout, last_error_line, run_script
 from ..schemas import ScanRequest, WatchlistAssetAdd, WatchlistCreate
 from ..services import indicators as ind
 from ..services import jobs as jobsvc
+from ..services import market_calendar as mcal
 from ..services import market_data as md
 from ..services.tasks import universe_path, watchlist_symbols
 from .common import audit, bad_request, not_found, rows, ser
@@ -31,6 +33,20 @@ router = APIRouter(prefix="/api", dependencies=[Depends(current_user)])
 def _err(e: md.DataError) -> JSONResponse:
     code = {"invalid_symbol": 400, "invalid_range": 400, "unknown_symbol": 404, "rate_limited": 429}.get(e.code, 502)
     return JSONResponse({"detail": {"code": e.code, "message": e.message}}, status_code=code)
+
+
+# ---------------------------------------------------------------- NYSE calendar
+
+@router.get("/market/calendar")
+def market_calendar(date: dt.date | None = None) -> dict:
+    """Is the NYSE open now, a given day's hours, and how far the calendars go. No prices."""
+    try:
+        out = {"status": mcal.status(), "coverage": mcal.coverage()}
+        if date is not None:
+            out["day"] = mcal.day(date).as_dict()
+    except mcal.CalendarError as e:
+        return JSONResponse({"detail": {"code": e.code, "message": e.message}}, status_code=422)
+    return out
 
 
 # ---------------------------------------------------------------- universe and search

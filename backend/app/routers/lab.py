@@ -21,11 +21,12 @@ from ..engines.runner import load_module
 from ..schemas import (BacktestRequest, OrbPlanRequest, RiskCheckRequest, StrategyCreate, StrategyUpdate,
                        TimeMachineRequest)
 from ..services import jobs as jobsvc
+from ..services import market_calendar as mcal
 from ..services import market_data as md
 from ..services.backtest import RULE_LABELS
 from ..services.metrics import summarize
 from ..services.tasks import strategy_config
-from .common import audit, bad_request, not_found, rows, ser
+from .common import audit, bad_request, calendar_refusal, not_found, rows, ser
 
 router = APIRouter(prefix="/api", dependencies=[Depends(current_user)])
 NY = ZoneInfo("America/New_York")
@@ -153,8 +154,17 @@ def _submit_experiment(user: CurrentUser, job_type: str, kind: str, title: str, 
     return {"job": ser(job), "created": was_created, "experiment_id": job["params"]["experiment_id"]}
 
 
+def _engine_day(d: dt.date) -> None:
+    """Refuse, before any job or engine call, a day the engines cannot place on the NYSE calendar."""
+    try:
+        mcal.require_engine_session(d)
+    except mcal.CalendarError as e:
+        raise calendar_refusal(e.code, e.message)
+
+
 @router.post("/timemachine", status_code=status.HTTP_202_ACCEPTED)
 def run_timemachine(body: TimeMachineRequest, user: CurrentUser = Depends(current_user)) -> dict:
+    _engine_day(body.date)
     if body.strategy_id is not None:
         with tx(user.id, user.email) as conn:
             _get_strategy(conn, user, body.strategy_id)  # 404 unless it belongs to this lab
@@ -363,6 +373,7 @@ def snapshot_bars(sid: uuid.UUID, date: dt.date, user: CurrentUser = Depends(cur
 def orb_plan(body: OrbPlanRequest, user: CurrentUser = Depends(current_user)) -> dict:
     """The day's opening-range breakout from a frozen snapshot: trader-entry finds the
     trigger bar, trader-exit sets the stop and the target. Pure calls, no network."""
+    _engine_day(body.date)
     s, _ = _snapshot(user, body.snapshot_id)
     if s["interval"] != "5m":
         raise bad_request("O plano ORB precisa de um snapshot de candles de 5 minutos.")

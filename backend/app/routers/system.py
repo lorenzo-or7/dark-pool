@@ -31,6 +31,13 @@ def health() -> dict:
     out = {"status": "ok", "version": APP_VERSION, "engine": ENGINE_VERSION, "mode": s.dp_auth_mode,
            "database": "postgres" if s.is_postgres else "sqlite", "engines": engines,
            "storage": storage.backend(), "broker": "not_integrated"}
+    try:
+        from ..services import market_calendar as mcal
+        cov = mcal.coverage()
+        out["calendar"] = {"status": "warning" if cov["warnings"] else "ok", "engine_years": cov["engine_years"],
+                           "server_to": cov["server_range"]["to"], "warnings": cov["warnings"]}
+    except Exception:  # noqa: BLE001 - the calendar never takes the health check down
+        out["calendar"] = {"status": "unavailable"}
     if s.is_public:
         # Only a yes/no and a plain reason: no ids, hosts, keys or database details.
         try:

@@ -45,6 +45,10 @@ def bad_request(message: str, code: str = "invalid") -> HTTPException:
     return HTTPException(status.HTTP_400_BAD_REQUEST, {"code": code, "message": message})
 
 
+def calendar_refusal(code: str, message: str) -> HTTPException:
+    return HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, {"code": code, "message": message})
+
+
 def audit(conn: Connection, user: CurrentUser, action: str, entity: str, entity_id: object = None,
           detail: dict | None = None) -> None:
     conn.execute(audit_events.insert().values(
