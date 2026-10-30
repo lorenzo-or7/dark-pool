@@ -20,6 +20,7 @@ from ..db import (data_snapshots, experiments, new_id, now, simulated_trades, si
 from ..engines.runner import load_module
 from ..schemas import (BacktestRequest, OrbPlanRequest, RiskCheckRequest, StrategyCreate, StrategyUpdate,
                        TimeMachineRequest)
+from ..services import alpaca
 from ..services import jobs as jobsvc
 from ..services import market_calendar as mcal
 from ..services import market_data as md
@@ -156,12 +157,13 @@ def _submit_experiment(user: CurrentUser, job_type: str, kind: str, title: str, 
     return {"job": ser(job), "created": was_created, "experiment_id": job["params"]["experiment_id"]}
 
 
-def _new_data_allowed(snapshot_id: uuid.UUID | None) -> None:
-    """A run without a snapshot downloads data: refuse it up front if the source is off."""
+def _new_data_allowed(snapshot_id: uuid.UUID | None, interval: str) -> None:
+    """A run without a snapshot downloads data: refuse it up front if the provider chosen for
+    that interval (DP_INTRADAY_PROVIDER for 5-minute bars, Yahoo for daily) is off. No fallback."""
     if snapshot_id is not None:
         return
     try:
-        prov.check_allowed(md.PROVIDER_ID)
+        prov.check_allowed(prov.bars_provider(interval))
     except prov.ProviderUnavailable as e:
         raise HTTPException(503, {"code": e.code, "message": e.message + " Use um snapshot já salvo."})
 
@@ -180,7 +182,7 @@ def run_timemachine(body: TimeMachineRequest, user: CurrentUser = Depends(curren
     if body.strategy_id is not None:
         with tx(user.id, user.email) as conn:
             _get_strategy(conn, user, body.strategy_id)  # 404 unless it belongs to this lab
-    _new_data_allowed(body.snapshot_id)
+    _new_data_allowed(body.snapshot_id, "5m")
     params = body.model_dump(mode="json", exclude={"title"})
     title = body.title or (f"Time Machine · {body.symbol} {body.date.isoformat()} {body.entry_time} · "
                            f"{body.replays:,} replays · seed {body.seed}").replace(",", ".")
@@ -195,10 +197,12 @@ def run_backtest(body: BacktestRequest, user: CurrentUser = Depends(current_user
             cfg, version, name = strategy_config(conn, user.workspace_id, body.strategy_id, body.version)
         except LookupError:
             raise not_found("Estratégia ou versão")
-    _new_data_allowed(body.snapshot_id)
+    orb = (cfg.get("rule") or {}).get("type") == "orb"
+    _new_data_allowed(body.snapshot_id, "5m" if orb else "1d")
     params = {"strategy_id": str(body.strategy_id), "version": version, "config": cfg, "range": body.range,
               "snapshot_id": str(body.snapshot_id) if body.snapshot_id else None,
-              "split_date": body.split_date.isoformat() if body.split_date else None}
+              "split_date": body.split_date.isoformat() if body.split_date else None,
+              **({"history_sessions": body.history_sessions} if orb else {})}
     title = f"Backtest · {name} v{version} · {cfg['symbol']}"
     return _submit_experiment(user, "backtest.run", "backtest", title, params, strategy_id=body.strategy_id,
                               version=version, dataset="split" if body.split_date else "full")
@@ -371,8 +375,12 @@ def snapshot_sessions(sid: uuid.UUID, user: CurrentUser = Depends(current_user))
     if s["interval"] != "5m":
         raise bad_request("O replay usa snapshots de candles de 5 minutos.")
     days = _session_bars(chart)
+    quality = None
+    if s["source"] == alpaca.SOURCE:
+        quality = alpaca.session_quality(md.read_snapshot_text(s["sha256"], user.workspace_id))
     return {"snapshot": ser(s), "sessions": [{"date": d, "bars": len(v), "full": len(v) == 78}
-                                             for d, v in sorted(days.items())]}
+                                             for d, v in sorted(days.items())],
+            "data_quality": quality}
 
 
 @router.get("/snapshots/{sid}/bars")

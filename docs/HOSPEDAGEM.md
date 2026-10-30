@@ -56,6 +56,8 @@ público. Nenhum valor secreto vai para o repositório nem para o navegador.
    | `SUPABASE_SERVICE_ROLE_KEY` | a secret key |
    | `DP_ALLOWED_ORIGINS` | o endereço da Vercel, ex. `https://dark-pool.vercel.app` (vírgulas para mais de um) |
    | `SEC_USER_AGENT` | `Seu Nome seu@email` (opcional; notícias 8-K e resultados) |
+   | `ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY` | chaves do plano Basic da Alpaca (opcional; candles de 5 min do Time Machine e do backtest ORB). Só aqui, nunca no frontend |
+   | `DP_INTRADAY_PROVIDER` | `auto` (Alpaca quando há chaves; senão Yahoo) |
 
 3. Depois do deploy, abra `https://<serviço>.onrender.com/api/health`. Esperado: `"mode": "public"`,
    `"public_lab": "ready"`, `"storage": "supabase"`. Se aparecer `unconfigured`, o campo `detail` diz o que falta.

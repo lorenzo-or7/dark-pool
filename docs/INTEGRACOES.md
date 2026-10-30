@@ -3,6 +3,10 @@
 Registro de cada fonte de dados integrada ao DARK POOL. Uma seção por integração, preenchida
 quando o bloco correspondente é entregue.
 
+Estado (30/10/2026): Blocos 1 (calendário) e 2 (política, cotas e proveniência) estão no GitHub,
+commit `9affb62`. Bloco 3 (Alpaca + Time Machine) implementado e testado com fixtures; teste real
+com chaves pendente, sem commit.
+
 Decisões de base (relatório de provedores, 30/10/2026):
 - Fase gratuita: preços e barras são insumo interno do servidor; o público vê sinais, métricas e
   simulações. Nenhum plano gratuito verificado autoriza exibir preços brutos a visitantes anônimos.
@@ -79,7 +83,7 @@ gratuito); um reinício zera os contadores.
 | Yahoo Finance | 60 | 3.000 | não publicado |
 | SEC EDGAR | 300 | 20.000 | 10 por segundo |
 | Nasdaq Trader | 6 | 60 | não publicado |
-| Alpaca (Bloco 3) | 150 | sem limite local | 200 por minuto |
+| Alpaca | 150 (1 por página de até 10.000 candles) | sem limite local | 200 por minuto |
 
 - HTTP 429 pausa o provedor por 120 s; três falhas seguidas pausam por 30 s (`provider_paused`).
 - Downloads idênticos em andamento são feitos uma vez e compartilhados (single-flight).
@@ -95,3 +99,87 @@ gratuito); um reinício zera os contadores.
 - O hash do snapshot continua sendo o do conteúdo baixado. A proveniência fica ao lado, em
   `results.snapshot.provenance` de cada experimento; experimentos antigos recebem o campo na leitura.
 - Execuções feitas com Yahoo continuam identificadas como Yahoo.
+- Execuções com Alpaca ficam identificadas como `alpaca:iex` (provedor `alpaca`, `feed: iex`).
+
+---
+
+## Alpaca Market Data, plano Basic, feed IEX (Bloco 3)
+
+Categoria B: o usuário cria a conta e as chaves. Sem chaves, o provedor fica `missing_key` e nada muda.
+
+| Item | Valor |
+|---|---|
+| Documentação usada (30/10/2026) | https://docs.alpaca.markets/reference/stockbars, https://docs.alpaca.markets/us/reference/stockbarsingle-1, https://docs.alpaca.markets/us/docs/about-market-data-api.md |
+| Endpoint | `GET https://data.alpaca.markets/v2/stocks/bars`, cabeçalhos `APCA-API-KEY-ID` e `APCA-API-SECRET-KEY` |
+| Parâmetros enviados | `symbols`, `timeframe=5Min`, `start`, `end` (ambos inclusivos), `limit=10000`, `adjustment=all`, `feed=iex`, `sort=asc`, `page_token` |
+| Código | `backend/app/services/alpaca.py`; escolha do provedor em `providers.bars_provider()`; jobs em `services/tasks.py` |
+| Uso | Candles de 5 min de execuções novas do Time Machine e dos backtests ORB. Candles diários continuam no Yahoo. |
+| Escolha | `DP_INTRADAY_PROVIDER` = `auto` (padrão: Alpaca quando há as duas chaves), `alpaca` ou `yahoo` |
+| Janela | `history_sessions` (20 a 250, padrão 60) sessões da NYSE. Time Machine: N sessões antes do dia do plano + o próprio dia. Backtest ORB: as últimas N sessões já encerradas. Ignorado com snapshot ou com Yahoo. |
+| Persistência | Snapshot `source = "alpaca:iex"`, `range = "<N>sess"`, arquivo no bucket privado como os demais |
+| Frequência | Sob demanda, uma coleta por execução sem snapshot. Sem execução periódica. |
+| Falhas | 401/403 `provider_auth`; 429 `rate_limited` (pausa 120 s); 400/422 `provider_bad_request` com o texto curto da Alpaca; outros `provider_error`; rede `provider_unreachable`/`provider_timeout`. A tarefa falha com o motivo. Não há troca para o Yahoo. |
+| Segredos | Só nos cabeçalhos. Mensagens de erro passam por `scrub()`, que remove chave e secret. `scripts/check_alpaca.py` não imprime nenhum trecho das chaves. |
+
+### Conversão para o formato dos motores
+
+As barras viram o layout do Yahoo v8 (`chart.result[0].meta/timestamp/indicators.quote`), que os
+motores já leem; nenhum motor foi editado.
+
+- `timestamp`: o `t` da Alpaca (início da barra, UTC), sem alteração. Barras fora do pregão regular
+  (pré e pós-mercado) ficam de fora e são contadas em `meta.leftOut`.
+- `data_end`: instante na grade de 5 min, nunca depois do fechamento da última sessão nem de
+  agora − 16 min (o plano Basic restringe os 15 min mais recentes). Só se pedem barras que começam
+  antes dele (`end = data_end − 1 s`), e o conversor descarta qualquer uma que venha depois.
+- `meta.regularMarketTime = data_end`, não o horário da coleta. O motor só considera completa a
+  barra que termina até esse instante, e todas as barras guardadas terminam até ele.
+- `meta.symbol` no formato do Yahoo (`BRK-B`) e `dataGranularity = "5m"`, que o motor confere.
+
+### O que entra no hash do snapshot
+
+O hash é o SHA-256 do texto JSON canônico (chaves ordenadas, separadores fixos, ASCII). Participam:
+as barras guardadas (timestamp, open, high, low, close, volume), `meta.symbol`, `dataGranularity`,
+`exchangeTimezoneName`, `currency`, `regularMarketTime` (= `data_end`), `dataProvider`, `feed`,
+`adjustment`, `window` (dia do plano, lista de sessões, início, `data_end`, sessões pedidas) e
+`leftOut`. Não participam: o horário da coleta (fica na coluna `fetched_at`), a ordem em que as
+barras chegaram, os campos `n` e `vw` da Alpaca, o relatório de qualidade (recalculado do texto) e a
+proveniência (derivada de `source`). Assim, duas coletas da mesma janela com os mesmos dados geram
+o mesmo snapshot. Com `adjustment=all`, um desdobramento ou dividendo posterior muda os preços
+antigos e, portanto, o hash. O teste `test_golden_hash_is_stable` fixa o hash de uma entrada fixa.
+
+### Qualidade do IEX (`results.data_quality`)
+
+IEX é uma bolsa, não o consolidado: volume menor e horários sem negócio sem candle. Nada é
+preenchido. Por sessão: `closed` (encerrada até `data_end`; menos candles que o esperado = lacuna),
+`in_progress` (o `data_end` cai dentro dela; o esperado são só os horários já encerrados, e ela não
+conta como incompleta) ou `not_started`. Esperado: 78 candles, ou 42 num fechamento às 13h.
+`pool_sessions` = sessões encerradas com 78 candles antes do dia do plano, as que o motor usa.
+
+Antes de chamar o motor, o Time Machine recusa com motivo claro: candle de entrada ausente
+(`entry_bar_missing`, distinguindo lacuna do IEX de sessão ainda em andamento) e menos de 20 sessões
+completas (`not_enough_sessions`). O motor continua checando por conta própria.
+
+### Consumo de cota
+
+A Alpaca devolve também barras de pré e pós-mercado (descartadas depois). Estimativa: até ~192
+barras por sessão → 60 sessões ≈ 2 chamadas; 250 sessões ≈ 5 chamadas. Reproduzir por snapshot
+não chama a Alpaca.
+
+### Testes (`backend/tests/test_alpaca.py`)
+
+Todos com a fixture DERIVADA de `tests/alpaca_fixtures.py` (barras do arquivo TSLA da skill
+reescritas no formato da Alpaca; não coletadas) e uma camada HTTP falsa. Cobrem: janela por sessões
+(feriado, fechamento antecipado, dia em andamento, antes da abertura, limites 20–250), JSON
+determinístico e hash fixo, timestamps preservados e `regularMarketTime = data_end`, mesmo resultado
+do Time Machine (seed 19) que o arquivo original, paginação, cota, erros 400/401/403/429/500 e de
+rede sem chaves nas mensagens, lacunas contadas e não preenchidas, candle de entrada ausente,
+histórico curto, ponta a ponta na API (snapshot `alpaca:iex`, proveniência, `data_quality`,
+reprodução sem nova coleta), backtest ORB, escolha por configuração e ausência de troca silenciosa.
+O teste real (`test_live_alpaca_smoke`) só roda com `DP_LIVE_ALPACA=1` e chaves em `backend/.env`.
+
+### Pendente
+
+- Teste real com chaves no Windows do usuário: `scripts/check_alpaca.py` e `DP_LIVE_ALPACA=1`.
+  Confirma o que a documentação não diz explicitamente: que `t` é o início da barra (9:30 → 13:30Z
+  no horário de verão).
+- Confirmação por escrito da Alpaca sobre uso do plano Basic num site público (só cálculo no servidor).

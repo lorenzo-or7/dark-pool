@@ -239,3 +239,42 @@ export type Quote = {
   /** true when the display policy hid last, volume, avg_volume and spark */
   prices_hidden?: boolean
 }
+
+/** One NYSE session in an Alpaca (IEX) snapshot, counted against what the session has. */
+export type QualitySession = {
+  date: string
+  state: 'closed' | 'in_progress' | 'not_started'
+  bars: number
+  expected: number
+  full_length: number
+  early_close: boolean
+  missing: number
+  missing_times: string[]
+}
+
+/** results.data_quality of a run on Alpaca bars (null for Yahoo and the reference file). Gaps are never filled. */
+export type DataQuality = {
+  provider: string
+  feed: string
+  adjustment: string | null
+  data_end: string
+  plan_day: string | null
+  sessions_requested: number
+  sessions: number
+  closed_sessions: number
+  complete_sessions: number
+  early_close_sessions: number
+  incomplete_sessions: QualitySession[]
+  in_progress_session: QualitySession | null
+  not_started_sessions: string[]
+  missing_bars_closed: number
+  bars: number
+  left_out: Record<string, number>
+  pool_sessions: number
+  engine_min_sessions: number
+  filled: false
+  note: string
+}
+
+/** GET /api/workspace -> intraday_provider: who supplies new 5-minute bars (set on the server). */
+export type IntradayProvider = { setting: 'auto' | 'alpaca' | 'yahoo'; provider: 'alpaca' | 'yahoo'; daily_provider: 'yahoo' }

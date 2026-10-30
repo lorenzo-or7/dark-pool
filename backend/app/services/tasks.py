@@ -15,6 +15,7 @@ from ..config import ENGINE_VERSION, get_settings
 from ..db import (data_snapshots, experiments, now, scan_runs, simulated_trades, simulation_runs, strategies,
                   strategy_versions, tx, watchlist_assets)
 from ..engines.runner import last_error_line, run_script
+from . import alpaca
 from . import market_data as md
 from . import providers
 from .backtest import DAILY_RULES, BacktestError, backtest_daily, backtest_orb
@@ -128,8 +129,13 @@ def watchlist_symbols(conn, workspace_id: uuid.UUID, watchlist_id: uuid.UUID) ->
 
 # ---------------------------------------------------------------- snapshots
 
-def _snapshot_for(ctx: JobContext, symbol: str, snapshot_id: str | None, rng: str, interval: str) -> tuple[dict, str]:
-    """A frozen snapshot row and its text: the one asked for, or a fresh download frozen now."""
+def _snapshot_for(ctx: JobContext, symbol: str, snapshot_id: str | None, rng: str, interval: str,
+                  plan_day: str | None = None, sessions: int | None = None) -> tuple[dict, str]:
+    """A frozen snapshot row and its text: the one asked for, or a fresh download frozen now.
+
+    New 5-minute bars come from the provider chosen by DP_INTRADAY_PROVIDER (Alpaca when its keys
+    are set, in auto); everything else from Yahoo. If that provider is off or fails, the run fails
+    with its reason: there is no silent switch to another source."""
     if snapshot_id:
         with tx(ctx.user.id, ctx.user.email) as conn:
             row = conn.execute(select(data_snapshots).where(data_snapshots.c.id == uuid.UUID(snapshot_id),
@@ -145,6 +151,21 @@ def _snapshot_for(ctx: JobContext, symbol: str, snapshot_id: str | None, rng: st
             return dict(row), md.read_snapshot_text(row["sha256"], ctx.user.workspace_id)
         except md.DataError as e:
             raise JobFailure(e.message)
+    if providers.bars_provider(interval) == alpaca.PROVIDER_ID:
+        n = int(sessions or alpaca.DEFAULT_SESSIONS)
+        day = datetime.strptime(plan_day, "%Y-%m-%d").date() if plan_day else None
+        ctx.progress(10, f"Baixando {n} sessões de candles de 5 min de {symbol} (Alpaca, feed IEX)")
+        try:
+            text, fetched, _ = alpaca.fetch_session_chart(symbol, day, n)
+        except alpaca.AlpacaError as e:
+            raise JobFailure(e.message, e.code)
+        try:
+            with tx(ctx.user.id, ctx.user.email) as conn:
+                row = md.freeze_snapshot(conn, ctx.user.workspace_id, ctx.user.id, text, symbol, interval,
+                                         f"{n}sess", alpaca.SOURCE, fetched)
+        except md.DataError as e:
+            raise JobFailure(e.message, e.code)
+        return row, text
     ctx.progress(10, f"Baixando {rng} de candles de {interval} de {symbol}")
     try:
         text, fetched, _ = md.fetch_chart_raw(symbol, rng, interval, use_cache=False)
@@ -157,6 +178,21 @@ def _snapshot_for(ctx: JobContext, symbol: str, snapshot_id: str | None, rng: st
     except md.DataError as e:
         raise JobFailure(e.message, e.code)
     return row, text
+
+
+def _data_quality(snap: dict, text: str, before: str | None = None) -> dict | None:
+    """The IEX coverage report of an Alpaca snapshot, recomputed from the frozen text (so a
+    reproduction shows the same report). None for other sources."""
+    if snap.get("source") != alpaca.SOURCE:
+        return None
+    try:
+        return alpaca.session_quality(text, datetime.strptime(before, "%Y-%m-%d").date() if before else None)
+    except (KeyError, ValueError, TypeError):
+        return None
+
+
+IEX_LIMITATION = ("Feed IEX (Alpaca, plano gratuito): uma única bolsa, não o consolidado. Volume menor que o do "
+                  "mercado; horários sem negócio na IEX não têm candle e as sessões incompletas ficam de fora.")
 
 
 def _set_experiment(ctx: JobContext, exp_id: uuid.UUID, **values: object) -> None:
@@ -194,8 +230,20 @@ def timemachine_run(ctx: JobContext) -> dict:
     p = ctx.params
     exp_id = uuid.UUID(p["experiment_id"])
     _set_experiment(ctx, exp_id, status="running")
-    snap, text = _snapshot_for(ctx, p["symbol"], p.get("snapshot_id"), "60d", "5m")
+    snap, text = _snapshot_for(ctx, p["symbol"], p.get("snapshot_id"), "60d", "5m", plan_day=p["date"],
+                               sessions=p.get("history_sessions"))
     _set_experiment(ctx, exp_id, data_snapshot_id=snap["id"])
+    quality = _data_quality(snap, text, p["date"])
+    if quality is not None:
+        # Clear reasons before the engine runs; the engine itself is unchanged and checks again.
+        why = alpaca.entry_bar_check(text, datetime.strptime(p["date"], "%Y-%m-%d").date(), p["entry_time"])
+        if why:
+            raise JobFailure(why, "entry_bar_missing")
+        if quality["pool_sessions"] < alpaca.MIN_SESSIONS:
+            raise JobFailure(
+                f"Só {quality['pool_sessions']} sessões completas (78 candles) antes de {p['date']} no feed IEX; "
+                f"o Time Machine precisa de {alpaca.MIN_SESSIONS}. {len(quality['incomplete_sessions'])} sessões "
+                "encerradas tiveram lacunas e ficaram de fora. Peça mais sessões de histórico.", "not_enough_sessions")
     ctx.workdir.mkdir(parents=True, exist_ok=True)
     data_file = ctx.workdir / "chart.json"
     data_file.write_text(text, encoding="utf-8")
@@ -223,12 +271,14 @@ def timemachine_run(ctx: JobContext) -> dict:
         "warnings": doc.get("warnings") or [], "note": doc.get("note"), "data": doc.get("data"),
         "history_summary": summarize(trades),
         "snapshot": _snapshot_ref(snap),
+        "data_quality": quality,
         "algorithm_version": ENGINE_VERSION + " / timemachine",
         "limitations": [
             "Simulação construída a partir das sessões recentes do próprio ativo. Não é previsão.",
             "Os candles de 5 min são sorteados um a um, sem dependência entre eles: tendência e mudanças de volatilidade do dia não são modeladas.",
             "Gap através do stop conta como -1R; um candle que toca stop e alvo conta como stop. Sem custos nem slippage.",
             "Eventos ausentes da janela (resultados, notícias, suspensões) não aparecem nas simulações.",
+            *([IEX_LIMITATION] if quality is not None else []),
         ],
     }
     with tx(ctx.user.id, ctx.user.email) as conn:
@@ -276,12 +326,17 @@ def backtest_run(ctx: JobContext) -> dict:
     rule = cfg["rule"]["type"]
     split = p.get("split_date")
     if rule == "orb":
-        snap, text = _snapshot_for(ctx, symbol, p.get("snapshot_id"), "60d", "5m")
+        snap, text = _snapshot_for(ctx, symbol, p.get("snapshot_id"), "60d", "5m",
+                                   sessions=p.get("history_sessions"))
         ctx.progress(50, "Reexecutando a regra ORB em cada sessão")
         try:
             out = backtest_orb(text, symbol, cfg, split)
         except BacktestError as e:
             raise JobFailure(str(e))
+        quality = _data_quality(snap, text)
+        if quality is not None:
+            out["data_quality"] = quality
+            out["assumptions"] = [*out["assumptions"], IEX_LIMITATION]
     elif rule in DAILY_RULES:
         snap, text = _snapshot_for(ctx, symbol, p.get("snapshot_id"), p.get("range", "2y"), "1d")
         ctx.progress(50, "Calculando sinais sem informação futura")

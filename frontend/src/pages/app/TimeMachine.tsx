@@ -4,6 +4,7 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { PageHeader } from '@/components/app/AppShell'
 import { DataTable, type Column } from '@/components/app/DataTable'
+import { DataQualityPanel } from '@/components/app/DataQuality'
 import { JobProgress } from '@/components/app/JobProgress'
 import { CandlestickChart } from '@/components/charts/CandlestickChart'
 import { Badge, DataBadge, StatusBadge } from '@/components/ui/badge'
@@ -12,8 +13,9 @@ import { Field, Input, Select } from '@/components/ui/field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { EmptyState, ErrorState, Notice, Skeleton, Spinner } from '@/components/ui/states'
 import { api, download } from '@/lib/api'
+import { intradayLabel, useIntradayProvider } from '@/lib/intraday'
 import { fmt, localDateTime, relative, shortDate } from '@/lib/format'
-import type { Bar, Experiment, Job, MonteCarlo, Snapshot, Summary, Trade } from '@/lib/types'
+import type { Bar, DataQuality, Experiment, Job, MonteCarlo, Snapshot, Summary, Trade } from '@/lib/types'
 import { boundLabel } from '@/lib/strategy'
 import { cn } from '@/lib/utils'
 
@@ -33,6 +35,7 @@ type Form = {
   until: string
   or_minutes: number
   snapshot_id: string
+  history_sessions: number
 }
 
 type TMResults = {
@@ -46,6 +49,7 @@ type TMResults = {
   data: { last_bar: string; short_sessions_left_out: { date: string; bars: number }[] }
   history_summary: Summary
   snapshot: { id: string; sha256: string; source: string; fetched_at: string; is_fixture: boolean }
+  data_quality?: DataQuality | null
   algorithm_version: string
   limitations: string[]
 }
@@ -251,6 +255,7 @@ function Results({ exp }: { exp: Experiment }) {
               </div>
             ))}
           </dl>
+          {r.data_quality && <DataQualityPanel q={r.data_quality} />}
           {r.data.short_sessions_left_out.length > 0 && (
             <p className="mt-2 text-xs text-muted">Sessões curtas excluídas: {r.data.short_sessions_left_out.map((s) => shortDate(s.date)).join(', ')}.</p>
           )}
@@ -330,7 +335,9 @@ function Simulation({ initialExp }: { initialExp: string | null }) {
     until: sp.get('until') ?? '',
     or_minutes: Number(sp.get('or') ?? 15),
     snapshot_id: '',
+    history_sessions: 60,
   }))
+  const intraday = useIntradayProvider()
   const [stopRule, setStopRule] = useState<'or_mid' | 'or_low' | 'pct'>('or_mid')
   const [targetR, setTargetR] = useState(1)
   const [job, setJob] = useState<{ id: string; exp: string } | null>(null)
@@ -384,6 +391,7 @@ function Simulation({ initialExp }: { initialExp: string | null }) {
           until: f.until || null,
           or_minutes: f.or_minutes,
           snapshot_id: f.snapshot_id || null,
+          history_sessions: Math.min(250, Math.max(20, Math.round(f.history_sessions) || 60)),
           strategy_id: sp.get('strategy'),
         },
       }),
@@ -441,10 +449,10 @@ function Simulation({ initialExp }: { initialExp: string | null }) {
               }
             </Field>
           </div>
-          <Field label="Dados" hint="Snapshots congelados garantem que a execução possa ser repetida. Sem snapshot, baixa 60 dias agora.">
+          <Field label="Dados" hint="Snapshots congelados garantem que a execução possa ser repetida. Sem snapshot, os candles são baixados agora da fonte configurada no servidor.">
             {(p) => (
               <Select {...p} value={f.snapshot_id} onChange={(ev) => set('snapshot_id', ev.target.value)}>
-                <option value="">Baixar agora do Yahoo (60 dias, 5 min)</option>
+                <option value="">{intradayLabel(intraday, f.history_sessions)}</option>
                 {(snaps.data ?? []).map((x) => (
                   <option key={x.id} value={x.id}>
                     {x.is_fixture ? 'Referência do pacote' : 'Snapshot'} · {localDateTime(x.fetched_at)} · {x.sha256.slice(0, 8)}
@@ -453,6 +461,20 @@ function Simulation({ initialExp }: { initialExp: string | null }) {
               </Select>
             )}
           </Field>
+          {!f.snapshot_id && intraday?.provider === 'alpaca' && (
+            <Field label="Sessões de histórico" hint="Sessões da NYSE antes do dia do plano (20 a 250). Sessões com lacunas no IEX ficam de fora.">
+              {(p) => (
+                <Input
+                  {...p}
+                  type="number"
+                  min={20}
+                  max={250}
+                  value={f.history_sessions}
+                  onChange={(ev) => set('history_sessions', Number(ev.target.value))}
+                />
+              )}
+            </Field>
+          )}
 
           <fieldset className="rounded-[var(--radius-md)] border border-line p-3">
             <legend className="px-1 text-xs text-muted">Calcular pelo ORB (trader-entry + trader-exit)</legend>

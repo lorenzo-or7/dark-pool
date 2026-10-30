@@ -35,6 +35,8 @@ services:
         sync: false
       - key: ALPACA_API_SECRET_KEY
         sync: false
+      - key: DP_INTRADAY_PROVIDER
+        value: auto
       - key: DP_TRUSTED_PROXY_HOPS
         value: "1"
       - key: DP_JOB_WORKERS

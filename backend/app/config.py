@@ -82,6 +82,10 @@ class Settings(BaseSettings):
     # Alpaca Market Data (Basic plan, IEX feed). Server only, never sent to the browser.
     alpaca_api_key_id: str = ""
     alpaca_api_secret_key: str = ""
+    # Who supplies the 5-minute bars of new Time Machine runs and ORB backtests:
+    # "auto" = Alpaca when both keys are set, Yahoo otherwise; "alpaca" or "yahoo" = always that one.
+    # Never a silent switch: if the chosen provider fails, the run fails. Daily bars stay on Yahoo.
+    dp_intraday_provider: Literal["auto", "alpaca", "yahoo"] = "auto"
 
     # Display policy (see services/policy.py). Empty = the default for the mode: everything
     # visible in the local demo, restrictive in the public lab. Applied by the API, not the UI.
@@ -97,6 +101,11 @@ class Settings(BaseSettings):
     @property
     def is_public(self) -> bool:
         return self.dp_auth_mode == "public"
+
+    @field_validator("dp_intraday_provider", mode="before")
+    @classmethod
+    def _blank_is_auto(cls, v: object) -> object:
+        return "auto" if isinstance(v, str) and not v.strip() else (v.strip().lower() if isinstance(v, str) else v)
 
     @field_validator("dp_show_raw_prices", "dp_show_trigger_prices", "dp_allow_unofficial_sources",
                      "dp_pelosi_public", mode="before")

@@ -142,6 +142,9 @@ class BacktestRequest(Strict):
     snapshot_id: uuid.UUID | None = None
     range: Literal["1y", "2y", "5y"] = "2y"
     split_date: dt.date | None = None
+    # NYSE sessions of 5-minute bars for an ORB backtest downloaded from Alpaca. Ignored with a
+    # snapshot, with Yahoo (fixed 60 days) and by daily rules.
+    history_sessions: int = Field(default=60, ge=20, le=250)
 
 
 # ---------------------------------------------------------------- time machine
@@ -159,6 +162,9 @@ class TimeMachineRequest(Strict):
     until: str | None = None
     or_minutes: int = Field(default=15, ge=5, le=60)
     snapshot_id: uuid.UUID | None = None
+    # NYSE sessions before the plan's day downloaded from Alpaca. Ignored with a snapshot and
+    # with Yahoo (fixed 60 days).
+    history_sessions: int = Field(default=60, ge=20, le=250)
     strategy_id: uuid.UUID | None = None
     title: str = Field(default="", max_length=160)
 

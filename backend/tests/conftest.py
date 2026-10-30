@@ -11,6 +11,15 @@ from fastapi.testclient import TestClient
 DEMO = {"Authorization": "Bearer demo-local"}
 
 
+@pytest.fixture(autouse=True)
+def no_real_alpaca_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A backend/.env with real Alpaca keys must not change what the tests exercise, nor reach
+    the network. Environment variables win over the .env file; tests that need keys set fakes."""
+    monkeypatch.setenv("ALPACA_API_KEY_ID", "")
+    monkeypatch.setenv("ALPACA_API_SECRET_KEY", "")
+    monkeypatch.setenv("DP_INTRADAY_PROVIDER", "auto")
+
+
 @pytest.fixture()
 def settings_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("DP_DATA_DIR", str(tmp_path / "data"))

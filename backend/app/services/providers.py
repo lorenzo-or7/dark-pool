@@ -73,14 +73,35 @@ PROVIDERS: dict[str, Provider] = {p.id: p for p in (
     Provider("exchange_calendars", "Calendário NYSE (exchange_calendars)", "Pregões, feriados e fechamentos antecipados",
              "library", "Calculado no servidor", "https://github.com/gerrymanoim/exchange_calendars",
              None, per_minute=None, per_day=None, published_limit="sem rede"),
-    Provider("alpaca", "Alpaca Market Data (Basic, IEX)", "Barras e preços para cálculo interno (a partir do Bloco 3)",
-             "commercial", "Feed IEX; não é o preço consolidado", "https://alpaca.markets/disclosures",
+    Provider("alpaca", "Alpaca Market Data (Basic, IEX)",
+             "Candles de 5 min para cálculo interno: Time Machine e backtests ORB",
+             "commercial", "Feed IEX (uma bolsa, não o consolidado); 15 min de atraso no plano gratuito",
+             "https://alpaca.markets/disclosures",
              None, per_minute=150, per_day=None, published_limit="200 chamadas/min no histórico",
-             integrated=False, needs_key=True),
+             needs_key=True),
 )}
 
 # Sources recorded on snapshots -> provider id.
-SOURCE_PROVIDER = {"yahoo": "yahoo", "fixture:day-trader-skill/TSLA-60d5m": "yahoo"}
+SOURCE_PROVIDER = {"yahoo": "yahoo", "fixture:day-trader-skill/TSLA-60d5m": "yahoo", "alpaca:iex": "alpaca"}
+
+
+def bars_provider(interval: str) -> str:
+    """Which provider supplies NEW bars of this interval (DP_INTRADAY_PROVIDER). Only the
+    5-minute bars can come from Alpaca; daily and weekly bars stay on Yahoo (IEX volume is not
+    the consolidated volume the daily filters expect). No fallback: the caller checks the
+    returned provider and fails if it is unavailable."""
+    if interval != "5m":
+        return "yahoo"
+    s = get_settings()
+    choice = s.dp_intraday_provider
+    if choice == "auto":
+        return "alpaca" if (s.alpaca_api_key_id and s.alpaca_api_secret_key) else "yahoo"
+    return choice
+
+
+def intraday_summary() -> dict:
+    s = get_settings()
+    return {"setting": s.dp_intraday_provider, "provider": bars_provider("5m"), "daily_provider": "yahoo"}
 
 
 # ---------------------------------------------------------------- quota and circuit breaker
@@ -221,16 +242,19 @@ def provenance_for_source(source: str | None, is_fixture: bool = False) -> dict:
     if p is None:
         return {"provider": source, "provider_name": source, "official": None, "kind": "unknown",
                 "delay": None, "terms_url": None, "attribution": None, "is_fixture": is_fixture}
-    return {"provider": p.id, "provider_name": p.name, "official": p.kind in ("official", "library"),
-            "kind": p.kind, "delay": p.delay, "terms_url": p.terms_url, "attribution": p.attribution,
-            "is_fixture": is_fixture or (source or "").startswith("fixture:")}
+    out = {"provider": p.id, "provider_name": p.name, "official": p.kind in ("official", "library"),
+           "kind": p.kind, "delay": p.delay, "terms_url": p.terms_url, "attribution": p.attribution,
+           "is_fixture": is_fixture or (source or "").startswith("fixture:")}
+    if ":" in (source or "") and not (source or "").startswith("fixture:"):
+        out["feed"] = source.split(":", 1)[1]
+    return out
 
 
 _STATUS_TEXT = {
     "active": ("ativo", "up"),
     "source_disabled": ("desativado pela política", "caution"),
     "missing_key": ("sem chave", "caution"),
-    "not_integrated": ("chave configurada; integração no Bloco 3", "caution"),
+    "not_integrated": ("ainda não integrado", "caution"),
     "provider_paused": ("pausado após falhas", "down"),
     "quota_exhausted": ("cota diária esgotada", "down"),
     "needs_config": ("requer SEC_USER_AGENT", "caution"),

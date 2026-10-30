@@ -5,7 +5,9 @@ Uso, a partir da raiz do projeto:
     backend\\.venv\\Scripts\\python.exe scripts\\check_alpaca.py --symbol AAPL --date 2026-10-19
 
 Lê ALPACA_API_KEY_ID e ALPACA_API_SECRET_KEY de backend/.env (ou das variáveis de ambiente),
-pede as barras de 5 minutos de um pregão e diz quantas vieram. Nunca imprime as chaves.
+pede as barras de 5 minutos do pregão regular de um dia e diz quantas vieram e se o campo t é o
+início da barra (a barra das 9:30 deve vir com t = 13:30Z no horário de verão de Nova York).
+Nunca imprime as chaves, nem parte delas.
 """
 
 from __future__ import annotations
@@ -52,11 +54,12 @@ def main() -> int:
     if not key or not secret:
         print("Faltam ALPACA_API_KEY_ID e/ou ALPACA_API_SECRET_KEY em backend/.env.")
         return 2
-    print(f"Chave encontrada: {key[:2]}...{key[-2:]} (o secret não é exibido)")
+    print("Chaves encontradas (não são exibidas).")
 
     day = dt.date.fromisoformat(a.date)
     start = dt.datetime.combine(day, dt.time(9, 30), NY).astimezone(dt.UTC)
-    end = dt.datetime.combine(day, dt.time(16, 0), NY).astimezone(dt.UTC)
+    # `end` é inclusivo: 15:59:59 deixa de fora a barra das 16:00 (after-hours).
+    end = dt.datetime.combine(day, dt.time(15, 59, 59), NY).astimezone(dt.UTC)
     q = urllib.parse.urlencode({"symbols": a.symbol.upper(), "timeframe": "5Min", "feed": "iex",
                                 "adjustment": "all", "limit": 1000,
                                 "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -80,7 +83,15 @@ def main() -> int:
     if bars:
         t0 = dt.datetime.fromisoformat(bars[0]["t"].replace("Z", "+00:00")).astimezone(NY)
         t1 = dt.datetime.fromisoformat(bars[-1]["t"].replace("Z", "+00:00")).astimezone(NY)
-        print(f"Primeira barra {t0:%H:%M}, última {t1:%H:%M} (horário de Nova York).")
+        print(f"Primeira barra {t0:%H:%M} (t = {bars[0]['t']}), última {t1:%H:%M} (horário de Nova York).")
+        if t0.strftime("%H:%M") == "09:30" and t1.strftime("%H:%M") <= "15:55":
+            print("Confere: t é o início da barra (a barra 9:30-9:35 vem com t = 9:30).")
+        else:
+            print("ATENÇÃO: não deu para confirmar que t é o início da barra. Informe estas duas linhas.")
+        off = [b["t"] for b in bars
+               if dt.datetime.fromisoformat(b["t"].replace("Z", "+00:00")).timestamp() % 300]
+        if off:
+            print(f"ATENÇÃO: {len(off)} barra(s) fora da grade de 5 minutos.")
     return 0
 
 

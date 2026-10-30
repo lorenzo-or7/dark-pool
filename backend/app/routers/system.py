@@ -93,9 +93,11 @@ def update_me(body: ProfileUpdate, user: CurrentUser = Depends(current_user)) ->
     return me(user)
 
 
-def _data_sources(last_snap, universe) -> list[dict]:  # noqa: ANN001
-    """Every provider's state for the Settings page. Never keys, hosts or account details."""
-    last = {"yahoo": ser(last_snap), "nasdaq_trader": ser(_mtime(universe)) if universe.exists() else None}
+def _data_sources(last_snap: dict, universe) -> list[dict]:  # noqa: ANN001
+    """Every provider's state for the Settings page. Never keys, hosts or account details.
+    last_snap: latest non-fixture snapshot time per provider id."""
+    last = {**{k: ser(v) for k, v in last_snap.items()},
+            "nasdaq_trader": ser(_mtime(universe)) if universe.exists() else None}
     return [{**p, "last_fetch": last.get(p["id"], p["last_success"])} for p in providers.status()]
 
 
@@ -110,9 +112,15 @@ def workspace(user: CurrentUser = Depends(current_user)) -> dict:
             .join(profiles, profiles.c.id == workspace_members.c.user_id)
             .where(workspace_members.c.workspace_id == user.workspace_id)
             .order_by(workspace_members.c.created_at)))
-        last_snap = conn.execute(select(func.max(data_snapshots.c.fetched_at))
-                                 .where(data_snapshots.c.workspace_id == user.workspace_id,
-                                        data_snapshots.c.is_fixture.is_(False))).scalar()
+        last_by_source = conn.execute(select(data_snapshots.c.source, func.max(data_snapshots.c.fetched_at))
+                                      .where(data_snapshots.c.workspace_id == user.workspace_id,
+                                             data_snapshots.c.is_fixture.is_(False))
+                                      .group_by(data_snapshots.c.source)).all()
+    last_snap: dict = {}
+    for source, when in last_by_source:
+        pid = providers.SOURCE_PROVIDER.get(source)
+        if pid and when is not None and (pid not in last_snap or when > last_snap[pid]):
+            last_snap[pid] = when
     u = universe_path()
     if s.is_public and ws:
         # Only what the lab page shows; workspace settings and members stay private.
@@ -120,6 +128,7 @@ def workspace(user: CurrentUser = Depends(current_user)) -> dict:
     return {
         "workspace": ser(dict(ws)) if ws else None, "members": members, "shared": s.is_public,
         "data_sources": _data_sources(last_snap, u),
+        "intraday_provider": providers.intraday_summary(),
         "display_policy": policy.summary(),
         "version": {"app": APP_VERSION, "engine": ENGINE_VERSION, "mode": s.dp_auth_mode,
                     "database": "postgres" if s.is_postgres else "sqlite"},

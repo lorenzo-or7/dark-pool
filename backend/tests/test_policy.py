@@ -109,8 +109,11 @@ def test_public_quotes_keep_metrics_and_drop_prices(public_default: TestClient,
     assert q["change_pct"] is not None and q["volatility_pct"] is not None and q["prices_hidden"] is True
 
 
-def test_public_refuses_unofficial_source(public_default: TestClient) -> None:
+def test_public_refuses_unofficial_source(public_default: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     c = public_default
+    # 5-minute bars forced to Yahoo (with the Alpaca keys set, "auto" would pick Alpaca).
+    monkeypatch.setenv("DP_INTRADAY_PROVIDER", "yahoo")
+    _reset_settings()
     r = c.post("/api/timemachine", json=PLAN)
     assert r.status_code == 503 and r.json()["detail"]["code"] == "source_disabled"
     r = c.post("/api/scans", json={"source": "symbols", "symbols": ["TSLA"]})
@@ -164,7 +167,9 @@ def test_provider_status_never_contains_keys(public_default: TestClient) -> None
     assert SENTINEL_KEY not in body and SENTINEL_SECRET not in body
     src = {d["id"]: d for d in c.get("/api/workspace").json()["data_sources"]}
     assert src["yahoo"]["status_code"] == "source_disabled"
-    assert src["alpaca"]["status_code"] == "not_integrated"  # key present, adapter in Bloco 3
+    assert src["alpaca"]["status_code"] == "active"  # key present (sentinel), adapter integrated in Bloco 3
+    intraday = c.get("/api/workspace").json()["intraday_provider"]
+    assert intraday == {"setting": "auto", "provider": "alpaca", "daily_provider": "yahoo"}
     assert src["sec_edgar"]["status_code"] == "needs_config"
     assert src["exchange_calendars"]["status_code"] == "active"
     assert all({"name", "use", "status", "tone", "last_fetch", "usage"} <= set(d) for d in src.values())

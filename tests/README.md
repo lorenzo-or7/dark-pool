@@ -16,3 +16,18 @@ instalação original da skill (veja o README principal).
 A regressão do Time Machine usa o arquivo fixo `TSLA-60d5m.json.gz` do pacote e só vale com esse arquivo:
 TSLA, 19/10/2026, entrada 364,18 às 10:15 ET, stop 358,32, alvo 370,04, seed 19, 10.000 replays →
 alvo 29,4 %, stop 25,5 %, nenhum 45,1 %.
+
+## Alpaca (Bloco 3)
+
+`backend/tests/test_alpaca.py` roda só com fixtures: a fixture DERIVADA de `backend/tests/alpaca_fixtures.py`
+(barras do `TSLA-60d5m.json.gz` da skill reescritas no formato da Alpaca, não coletadas) e uma camada HTTP
+falsa. Nenhum desses testes prova o comportamento da API real. O teste real fica pulado até haver chaves:
+
+```bash
+backend\.venv\Scripts\python.exe scripts\check_alpaca.py
+set DP_LIVE_ALPACA=1
+backend\.venv\Scripts\python.exe -m pytest backend\tests\test_alpaca.py -k live
+```
+
+O `conftest.py` zera `ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY` e `DP_INTRADAY_PROVIDER` em todos os testes,
+para um `backend\.env` com chaves reais não mudar o que a suíte testa nem acessar a rede.

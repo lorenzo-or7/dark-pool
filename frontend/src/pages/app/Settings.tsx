@@ -51,6 +51,7 @@ type Ws = {
   shared?: boolean
   data_sources: DataSource[]
   display_policy?: DisplayPolicy
+  intraday_provider?: { setting: string; provider: string; daily_provider: string }
   version: { app: string; engine: string; mode: string; database: string }
 }
 
@@ -200,6 +201,12 @@ export default function Settings() {
             </li>
           ))}
         </ul>
+        {ws.data?.intraday_provider && (
+          <p className="mt-2 text-xs text-muted">
+            Candles de 5 min (Time Machine e backtests ORB): {ws.data.intraday_provider.provider === 'alpaca' ? 'Alpaca, feed IEX' : 'Yahoo'}
+            {ws.data.intraday_provider.setting === 'auto' ? ' (automático)' : ' (fixado no servidor)'}. Candles diários: Yahoo. Sem troca automática de fonte em caso de falha.
+          </p>
+        )}
         <p className="mt-2 text-xs text-faint">Cotações gratuitas têm atraso e não são tempo real. As cotas são compartilhadas por todos os visitantes e voltam a zero quando o servidor reinicia.</p>
       </Section>
 

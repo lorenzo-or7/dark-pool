@@ -2,7 +2,7 @@
 
 > Para o agente de código (Claude) que vai continuar o trabalho, com acesso ao checkout local do DARK POOL.
 > Junta o prompt de integração (versão 2) com o estado em que o trabalho parou em 30/10/2026.
-> Retome no **Bloco 3**. Os Blocos 1 e 2 estão concluídos; não refaça.
+> Blocos 1 e 2 concluídos e no GitHub. Bloco 3 implementado localmente (fixtures), aguardando teste real e revisão. Próximo: Bloco 4, só com autorização.
 
 ---
 
@@ -14,7 +14,7 @@ Leia o código antes de alterar. Não presuma que algo existe porque está descr
 
 ## CONTEXTO
 
-- Repositório: https://github.com/lorenzo-or7/dark-pool. O checkout local está à frente do remoto: **os Blocos 1 e 2 não foram enviados ao GitHub.** Se você não estiver na máquina onde eles foram gravados (`C:\Projetos\dark-pool`), peça antes uma cópia ou um push autorizado desse estado. Não descarte alterações locais.
+- Repositório: https://github.com/lorenzo-or7/dark-pool. Os Blocos 1 e 2 estão no GitHub (commit `9affb62`). O Bloco 3 foi implementado no checkout local (`C:\Users\lmors\OneDrive\Documentos\GitHub\dark-pool`), sem commit. Não descarte alterações locais.
 - Motores: módulos da day-trader-skill (https://github.com/Jakeschincariol/day-trader-skill), commit de referência `3d0f4ef`, vendorizados em `backend/vendor/day_trader_skill` e chamados por `backend/app/engines/runner.py`. Os motores **não são editados**. `trader-broker` está excluído.
 - Backend Python/FastAPI (Render), frontend React/Vite (Vercel), Supabase para banco e arquivos. Arquivos do projeto no Windows usam quebras de linha CRLF.
 - Laboratório público, sem login, com um único workspace compartilhado. Todos os visitantes usam as mesmas chaves e cotas, que ficam apenas no servidor.
@@ -27,9 +27,9 @@ Leia o código antes de alterar. Não presuma que algo existe porque está descr
 
 | Bloco | Situação |
 |---|---|
-| 1. Calendário da NYSE | Concluído, gravado no checkout local, sem push |
-| 2. Política de exibição, cotas e proveniência | Concluído, gravado no checkout local, sem push |
-| 3. Alpaca + Time Machine | **Interrompido. Nada gravado no checkout.** Há um rascunho não testado (ver abaixo) |
+| 1. Calendário da NYSE | Concluído, no GitHub (`9affb62`) |
+| 2. Política de exibição, cotas e proveniência | Concluído, no GitHub (`9affb62`) |
+| 3. Alpaca + Time Machine | Implementado no checkout local, sem commit. Testado só com fixtures; teste real pendente. Ver `docs/INTEGRACOES.md` |
 | 4 a 10 | Não iniciados |
 
 ### O que já existe (Blocos 1 e 2)
@@ -61,8 +61,8 @@ Testes com Postgres: `DP_TEST_PG_URL=postgresql://postgres@127.0.0.1:PORTA/postg
 
 - [ ] Criar **chaves novas** da Alpaca. As chaves antigas foram expostas numa conversa e devem ser revogadas. Nunca as escreva em código, log, fixture, commit ou documentação.
 - [ ] Criar `backend\.env` com `ALPACA_API_KEY_ID` e `ALPACA_API_SECRET_KEY` (o arquivo ainda não existia em 30/10).
-- [ ] Rodar `backend\.venv\Scripts\python.exe scripts\check_alpaca.py` e informar a linha `OK: N barras` ou `Falhou: ...`.
-- [ ] Apagar `tests\alpaca_script.py` na raiz: é uma cópia do script com a primeira linha corrompida (`ck alpaca · PY`), sem chaves.
+- [ ] Rodar `backend\.venv\Scripts\python.exe scripts\check_alpaca.py` e informar a linha `OK: N barras` ou `Falhou: ...`, e a linha `Confere: t é o início da barra` (ou `ATENÇÃO`).
+- [x] `tests\alpaca_script.py` removido em 30/10 (cópia redundante de `scripts\check_alpaca.py`, sem chaves; a primeira linha já não estava corrompida).
 - [ ] `SEC_USER_AGENT`: não havia `.env` com esse valor. Confirmar onde está configurado ou pedir nome e e-mail do projeto.
 - [ ] Aprovar ou ajustar a **proposta de gráficos do modo público** (abaixo).
 

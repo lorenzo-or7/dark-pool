@@ -10,6 +10,7 @@ import { ConfirmDialog, Dialog } from '@/components/ui/dialog'
 import { Field, Input, Select } from '@/components/ui/field'
 import { ErrorState, Notice, Skeleton } from '@/components/ui/states'
 import { api } from '@/lib/api'
+import { intradayLabel, useIntradayProvider } from '@/lib/intraday'
 import { localDateTime, relative, shortDate } from '@/lib/format'
 import { describe, diffConfig, ruleLabel } from '@/lib/strategy'
 import type { Experiment, Job, Snapshot, Strategy } from '@/lib/types'
@@ -20,6 +21,8 @@ function BacktestDialog({ s, open, onOpenChange }: { s: Strategy; open: boolean;
   const [range, setRange] = useState<'1y' | '2y' | '5y'>('2y')
   const [snap, setSnap] = useState('')
   const [split, setSplit] = useState('')
+  const [sessions, setSessions] = useState(60)
+  const intraday = useIntradayProvider()
   const [job, setJob] = useState<{ id: string; exp: string } | null>(null)
   const snaps = useQuery({
     queryKey: ['snapshots', s.symbol, orb ? '5m' : '1d'],
@@ -29,7 +32,7 @@ function BacktestDialog({ s, open, onOpenChange }: { s: Strategy; open: boolean;
   const run = useMutation({
     mutationFn: () =>
       api<{ job: Job; experiment_id: string }>('/backtests', {
-        body: { strategy_id: s.id, range, snapshot_id: snap || null, split_date: split || null },
+        body: { strategy_id: s.id, range, snapshot_id: snap || null, split_date: split || null, ...(orb ? { history_sessions: Math.min(250, Math.max(20, Math.round(sessions) || 60)) } : {}) },
       }),
     onSuccess: (r) => setJob({ id: r.job.id, exp: r.experiment_id }),
   })
@@ -39,7 +42,7 @@ function BacktestDialog({ s, open, onOpenChange }: { s: Strategy; open: boolean;
         <Field label="Dados" hint="Um download novo é congelado como snapshot com hash, para a execução poder ser repetida.">
           {(p) => (
             <Select {...p} value={snap} onChange={(e) => setSnap(e.target.value)}>
-              <option value="">Baixar agora ({orb ? '60 dias de candles de 5 min' : `${range} de candles diários`}, Yahoo)</option>
+              <option value="">{orb ? intradayLabel(intraday, sessions) : `Baixar agora (${range} de candles diários, Yahoo)`}</option>
               {(snaps.data ?? []).map((x) => (
                 <option key={x.id} value={x.id}>
                   Snapshot {x.is_fixture ? 'de referência' : ''} {x.range}/{x.interval} · {localDateTime(x.fetched_at)} · {x.sha256.slice(0, 10)}
@@ -48,6 +51,13 @@ function BacktestDialog({ s, open, onOpenChange }: { s: Strategy; open: boolean;
             </Select>
           )}
         </Field>
+        {orb && !snap && intraday?.provider === 'alpaca' && (
+          <Field label="Sessões de histórico" hint="Últimas sessões encerradas da NYSE (20 a 250). Sessões com lacunas no IEX ficam de fora.">
+            {(p) => (
+              <Input {...p} type="number" min={20} max={250} value={sessions} onChange={(e) => setSessions(Number(e.target.value))} />
+            )}
+          </Field>
+        )}
         {!orb && !snap && (
           <Field label="Período">
             {(p) => (
