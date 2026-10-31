@@ -338,7 +338,8 @@ function Simulation({ initialExp }: { initialExp: string | null }) {
     history_sessions: 60,
   }))
   const intraday = useIntradayProvider()
-  const [stopRule, setStopRule] = useState<'or_mid' | 'or_low' | 'pct'>('or_mid')
+  const [stopRule, setStopRule] = useState<'or_mid' | 'or_low' | 'pct' | 'atr'>('or_mid')
+  const [atrK, setAtrK] = useState(1.5)
   const [targetR, setTargetR] = useState(1)
   const [job, setJob] = useState<{ id: string; exp: string } | null>(null)
   const expId = initialExp
@@ -368,8 +369,24 @@ function Simulation({ initialExp }: { initialExp: string | null }) {
   })
   const planOrb = useMutation({
     mutationFn: () =>
-      api<{ triggered: boolean; reason?: string; refusal?: string; opening_range: { high: number; low: number } | null; plan?: { entry: number; stop: number; target: number; entry_time: string } }>('/plan/orb', {
-        body: { snapshot_id: f.snapshot_id, date: f.date, or_minutes: f.or_minutes, stop_rule: stopRule, target_r: targetR },
+      api<{
+        triggered: boolean
+        reason?: string
+        refusal?: string
+        opening_range: { high: number; low: number } | null
+        plan?: { entry: number; stop: number; target: number; entry_time: string; stop_label: string; atr?: number; atr_bars?: number }
+        data?: { note: string; source: string; new_snapshot: boolean }
+      }>('/plan/orb', {
+        // Without a snapshot the server downloads only that day's 5-minute bars and freezes them.
+        body: {
+          snapshot_id: f.snapshot_id || null,
+          symbol: f.snapshot_id ? null : f.symbol,
+          date: f.date,
+          or_minutes: f.or_minutes,
+          stop_rule: stopRule,
+          atr_k: atrK,
+          target_r: targetR,
+        },
       }),
     onSuccess: (r) => {
       if (r.plan) setF((x) => ({ ...x, entry: String(r.plan!.entry), stop: String(r.plan!.stop), target: String(r.plan!.target), entry_time: r.plan!.entry_time }))
@@ -495,9 +512,23 @@ function Simulation({ initialExp }: { initialExp: string | null }) {
                   <Select {...p} value={stopRule} onChange={(ev) => setStopRule(ev.target.value as typeof stopRule)}>
                     <option value="or_mid">Meio</option>
                     <option value="or_low">Mínima</option>
+                    <option value="atr">ATR × K</option>
                   </Select>
                 )}
               </Field>
+              {stopRule === 'atr' && (
+                <Field label="K (ATR)">
+                  {(p) => (
+                    <Select {...p} value={atrK} onChange={(ev) => setAtrK(Number(ev.target.value))}>
+                      {[1, 1.5, 2, 3].map((n) => (
+                        <option key={n} value={n}>
+                          {n}×
+                        </option>
+                      ))}
+                    </Select>
+                  )}
+                </Field>
+              )}
               <Field label="Alvo">
                 {(p) => (
                   <Select {...p} value={targetR} onChange={(ev) => setTargetR(Number(ev.target.value))}>
@@ -510,16 +541,29 @@ function Simulation({ initialExp }: { initialExp: string | null }) {
                 )}
               </Field>
             </div>
-            <Button type="button" size="sm" className="mt-2 w-full" disabled={!f.snapshot_id || !f.date || planOrb.isPending} onClick={() => planOrb.mutate()}>
+            <Button
+              type="button"
+              size="sm"
+              className="mt-2 w-full"
+              disabled={!f.date || (!f.snapshot_id && !f.symbol) || planOrb.isPending}
+              onClick={() => planOrb.mutate()}
+            >
               <Wand2 /> Preencher plano
             </Button>
-            {!f.snapshot_id && <p className="mt-1.5 text-[11px] text-faint">Escolha um snapshot e uma data.</p>}
+            {!f.snapshot_id && (
+              <p className="mt-1.5 text-[11px] text-faint">
+                Sem snapshot, o servidor baixa só os candles de {f.symbol || 'ativo'} em {f.date || 'data'} e congela um snapshot desse dia. Cálculo único, sem monitoramento contínuo.
+              </p>
+            )}
+            {stopRule === 'atr' && <p className="mt-1.5 text-[11px] text-faint">Stop do trader-exit: K × ATR de até 14 candles da sessão, até o candle de entrada.</p>}
             {planOrb.data && !planOrb.data.plan && <p className="mt-2 text-xs text-caution">{planOrb.data.refusal ?? planOrb.data.reason ?? 'A regra não disparou nesta sessão.'}</p>}
             {planOrb.data?.opening_range && planOrb.data.plan && (
               <p className="num mt-2 text-[11px] text-muted">
                 faixa {planOrb.data.opening_range.low.toFixed(2)} a {planOrb.data.opening_range.high.toFixed(2)} · gatilho às {planOrb.data.plan.entry_time}
+                {planOrb.data.plan.atr != null && ` · ATR(${planOrb.data.plan.atr_bars}) ${planOrb.data.plan.atr.toFixed(4)}`}
               </p>
             )}
+            {planOrb.data?.data?.new_snapshot && <p className="mt-1 text-[11px] text-faint">{planOrb.data.data.note}</p>}
             {planOrb.isError && <ErrorState error={planOrb.error} className="mt-2" />}
           </fieldset>
 

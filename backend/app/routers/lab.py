@@ -396,41 +396,116 @@ def snapshot_bars(sid: uuid.UUID, date: dt.date, user: CurrentUser = Depends(cur
 
 # ---------------------------------------------------------------- ORB plan (trader-entry + trader-exit)
 
+def _day_snapshot(user: CurrentUser, symbol: str, day: dt.date) -> tuple[dict, str, dict | None]:
+    """No snapshot given: download the day's 5-minute bars from the configured provider and freeze
+    them, so the plan can be repeated. -> (snapshot row, text, IEX data quality or None)."""
+    pid = prov.bars_provider("5m")
+    try:
+        prov.check_allowed(pid)
+    except prov.ProviderUnavailable as e:
+        raise HTTPException(503, {"code": e.code, "message": e.message + " Use um snapshot já salvo."})
+    quality = None
+    if pid == "alpaca":
+        try:
+            text, fetched, quality = alpaca.fetch_day_chart(symbol, day)
+        except alpaca.AlpacaError as e:
+            code = {"rate_limited": 429, "quota_exhausted": 429, "not_available_yet": 409,
+                    "market_closed": 422}.get(e.code, 502)
+            raise HTTPException(code, {"code": e.code, "message": e.message})
+        source, rng = alpaca.SOURCE, "1sess"
+    else:
+        try:
+            text, fetched, _ = md.fetch_chart_raw(symbol, "60d", "5m", use_cache=False)
+        except md.DataError as e:
+            code = {"rate_limited": 429, "quota_exhausted": 429, "unknown_symbol": 404}.get(e.code, 502)
+            raise HTTPException(code, {"code": e.code, "message": e.message})
+        source, rng = md.SOURCE, "60d"
+    with tx(user.id, user.email) as conn:
+        try:
+            row = md.freeze_snapshot(conn, user.workspace_id, user.id, text, symbol, "5m", rng, source, fetched)
+        except md.DataError as e:
+            raise HTTPException(502, {"code": e.code, "message": e.message})
+    return dict(row), text, quality
+
+
+def _session_atr(exitm, text: str, symbol: str, day: dt.date, entry_bar: int) -> tuple[float, int]:  # noqa: ANN001
+    """trader-exit's own ATR: the 14-bar ATR of the session's closed bars up to the entry bar."""
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory(prefix="dp-exit-") as d:
+        f = Path(d) / "chart.json"
+        f.write_text(text, encoding="utf-8")
+        chart = exitm.load_chart(symbol, "5m", day, str(f))
+    bars = exitm.session_bars(chart, day, "5m", entry_bar)
+    if len(bars) < 3:
+        raise exitm.PlanError("an atr stop needs at least 3 closed 5m bars of %s on %s by the entry; found %d"
+                              % (symbol, day, len(bars)))
+    return exitm.atr_of(bars)
+
+
 @router.post("/plan/orb")
 def orb_plan(body: OrbPlanRequest, user: CurrentUser = Depends(current_user)) -> dict:
-    """The day's opening-range breakout from a frozen snapshot: trader-entry finds the
-    trigger bar, trader-exit sets the stop and the target. Pure calls, no network."""
+    """The day's opening-range breakout: trader-entry finds the trigger bar, trader-exit sets the
+    stop and the target. From a frozen snapshot (no network), or, without one, from the day's
+    bars downloaded now and frozen. No continuous monitoring: one evaluation per request."""
     _engine_day(body.date)
-    s, _ = _snapshot(user, body.snapshot_id)
-    if s["interval"] != "5m":
-        raise bad_request("O plano ORB precisa de um snapshot de candles de 5 minutos.")
+    quality = None
+    if body.snapshot_id is not None:
+        s, _ = _snapshot(user, body.snapshot_id)
+        if s["interval"] != "5m":
+            raise bad_request("O plano ORB precisa de um snapshot de candles de 5 minutos.")
+        if body.symbol and body.symbol != s["symbol"]:
+            raise bad_request(f"O snapshot é de {s['symbol']}, não de {body.symbol}.")
+        text = md.read_snapshot_text(s["sha256"], user.workspace_id)
+    else:
+        s, text, quality = _day_snapshot(user, body.symbol, body.date)
     entry, exitm = load_module("entry"), load_module("exit")
-    text = md.read_snapshot_text(s["sha256"], user.workspace_id)
-    close_utc = entry.eastern_to_utc(dt.datetime.combine(body.date, dt.time(16, 5)))
     try:
         chart = entry.parse_chart(text, s["symbol"])
-        res = entry.evaluate(chart, close_utc, setup="orb", or_minutes=body.or_minutes, interval="5m")
+        # Evaluate at the session's close, or earlier if the data stops earlier (a session still in
+        # progress, or Alpaca's 15-minute delay): a missing trigger then reads "waiting", not "expired".
+        as_of = entry.eastern_to_utc(dt.datetime.combine(body.date, dt.time(16, 5)))
+        if chart.get("data_time"):
+            as_of = min(as_of, entry.utc_of(chart["data_time"]))
+        res = entry.evaluate(chart, as_of, setup="orb", or_minutes=body.or_minutes, interval="5m")
     except entry.EntryError as e:
         raise bad_request(str(e), "entry_error")
     pub = entry.public(res)
     orr, trig = pub.get("opening_range"), pub.get("trigger")
+    data = {"snapshot_id": str(s["id"]), "sha256": s["sha256"], "source": s["source"],
+            "fetched_at": ser(s["fetched_at"]), "evaluated_at_utc": as_of.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "provenance": prov.provenance_for_source(s["source"], bool(s.get("is_fixture"))),
+            "data_quality": quality, "new_snapshot": body.snapshot_id is None,
+            "note": ("Plano calculado uma vez, nesta consulta. Não há monitoramento contínuo do gatilho."
+                     + (" Dados da Alpaca (feed IEX) com no mínimo 16 minutos de atraso."
+                        if s["source"] == alpaca.SOURCE else ""))}
     if pub["status"] != "triggered" or not trig or not orr:
         return {"triggered": False, "status": pub["status"], "reason": pub.get("reason"), "opening_range": orr,
-                "engine": "trader-entry"}
+                "engine": "trader-entry", "data": data}
+    atr = atr_n = None
     try:
-        plan = exitm.compute(exitm.D(str(trig["price"])), body.stop_rule, exitm.D(str(body.stop_pct)), "r",
-                             exitm.D(str(body.target_r)),
-                             or_high=orr["high"], or_low=orr["low"])
+        if body.stop_rule == "atr":
+            atr, atr_n = _session_atr(exitm, text, s["symbol"], body.date, int(trig["bar_index"]))
+            stop_param = exitm.D(str(body.atr_k))
+        else:
+            stop_param = exitm.D(str(body.stop_pct))
+        plan = exitm.compute(exitm.D(str(trig["price"])), body.stop_rule, stop_param, "r",
+                             exitm.D(str(body.target_r)), or_high=orr["high"], or_low=orr["low"],
+                             atr=atr, atr_bars=atr_n)
     except exitm.PlanError as e:
-        return {"triggered": True, "plan": None, "refusal": str(e), "trigger": trig, "opening_range": orr}
+        return {"triggered": True, "plan": None, "refusal": str(e), "trigger": trig, "opening_range": orr,
+                "data": data}
     hh, mm = (int(x) for x in str(trig["time"])[:5].split(":"))
+    out_plan = {"symbol": s["symbol"], "date": body.date.isoformat(), "entry_time": f"{hh:02d}:{mm:02d}",
+                "entry": float(plan["entry"]), "stop": float(plan["stop"]), "target": float(plan["target"]),
+                "risk_per_share": float(plan["risk"]), "stop_rule": body.stop_rule,
+                "stop_label": plan["stop_label"], "stop_detail": plan.get("stop_detail") or None,
+                "target_label": plan["target_label"]}
+    if atr is not None:
+        out_plan.update(atr=round(atr, 4), atr_bars=atr_n, atr_k=body.atr_k)
     return {
         "triggered": True, "trigger": trig, "opening_range": orr, "reason": pub.get("reason"),
-        "plan": {"symbol": s["symbol"], "date": body.date.isoformat(), "entry_time": f"{hh:02d}:{mm:02d}",
-                 "entry": float(plan["entry"]), "stop": float(plan["stop"]), "target": float(plan["target"]),
-                 "risk_per_share": float(plan["risk"]), "stop_label": plan["stop_label"],
-                 "target_label": plan["target_label"]},
-        "engine": "trader-entry + trader-exit",
+        "plan": out_plan, "engine": "trader-entry + trader-exit", "data": data,
     }
 
 
