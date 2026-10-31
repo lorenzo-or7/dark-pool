@@ -172,8 +172,8 @@ Um bloco por vez. Pare e entregue o relatório de cada bloco antes do próximo, 
 2. ~~Política de exibição, proveniência e cotas~~ (concluído)
 3. ~~Adaptador Alpaca + Time Machine~~ (no GitHub; feed SIP na branch `bloco4-entry-exit`)
 4. ~~Entry e Exit (barras do dia; ATR da sessão)~~ (branch `bloco4-entry-exit`)
-5. **Alerts: cotação de vários símbolos por requisição; remover o Stooq** ← retomar aqui
-6. Scanner: diário e ORB, com a recalibração de volume aprovada
+5. ~~Alerts: cotação de vários símbolos por requisição; remover o Stooq~~ (branch `bloco4-entry-exit`; sob demanda, regras no navegador)
+6. **Scanner: diário e ORB, com a recalibração de volume aprovada** ← retomar aqui
 7. News: SEC 8-K + GDELT; desligar o RSS do Yahoo em produção
 8. Universo: metadados da SEC (CIK, bolsa, SIC como setor, após confirmar na documentação); market cap só interno; float fora
 9. Analyst: manter SEC; "próximo resultado" só como histórico do item 2.02 dos 8-K

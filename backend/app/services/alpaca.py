@@ -460,3 +460,96 @@ def fetch_day_chart(symbol: str, day: dt.date, now_utc: dt.datetime | None = Non
     """Only the plan day's regular session (Entry and Exit need no history): one call, about 80
     bars, up to the close or to now minus 16 minutes when the session is still open."""
     return fetch_session_chart(symbol, day, 0, now_utc, min_sessions=0)
+
+
+# ---------------------------------------------------------------- quotes for the alerts (Bloco 5)
+
+SNAPSHOTS_URL = "https://data.alpaca.markets/v2/stocks/snapshots"
+QUOTE_FEEDS = ("delayed_sip", "iex")
+SNAPSHOT_CHUNK = 100   # symbols per request; the reference page states no limit, this keeps URLs short
+
+
+def quote_feed() -> str:
+    return get_settings().dp_alpaca_quote_feed
+
+
+def _http_get_snapshots(params: dict) -> httpx.Response:
+    """The only network call of the quotes. Tests replace it."""
+    return httpx.get(SNAPSHOTS_URL, params=params, headers=_headers(), timeout=20)
+
+
+def _snapshot_quote(sym: str, snap: dict, feed_name: str) -> dict | None:
+    """One Alpaca snapshot -> the quote dict trader-alerts evaluates (its parse_yahoo shape)."""
+    if not isinstance(snap, dict):
+        return None
+    trade = snap.get("latestTrade") or {}
+    day = snap.get("dailyBar") or {}
+    prev = snap.get("prevDailyBar") or {}
+    price = trade.get("p")
+    if not isinstance(price, (int, float)):
+        price = day.get("c") if isinstance(day.get("c"), (int, float)) else None
+    if price is None:
+        return None
+    return {"symbol": sym, "price": float(price), "open": day.get("o"), "high": day.get("h"), "low": day.get("l"),
+            "prev_close": prev.get("c"), "time": trade.get("t") or day.get("t") or "", "currency": "USD",
+            "source": f"{PROVIDER_ID}:{feed_name}"}
+
+
+def fetch_snapshots(symbols: list[str], feed_name: str | None = None) -> tuple[dict[str, dict], list[dict]]:
+    """Latest trade, daily and previous daily bar of many symbols, one request per 100 symbols
+    (GET /v2/stocks/snapshots, documented at https://docs.alpaca.markets/reference/stocksnapshots-1).
+    The reference page does not show the body: both the documented v2 example (keyed by symbol at
+    the top level) and a {"snapshots": {...}} wrapper are read. -> ({SYM: quote}, [errors])."""
+    f = feed_name or quote_feed()
+    try:
+        providers.check_allowed(PROVIDER_ID)
+    except providers.ProviderUnavailable as e:
+        raise AlpacaError(e.code, e.message)
+    quotes: dict[str, dict] = {}
+    errors: list[dict] = []
+    for i in range(0, len(symbols), SNAPSHOT_CHUNK):
+        chunk = symbols[i:i + SNAPSHOT_CHUNK]
+        try:
+            providers.acquire(PROVIDER_ID)
+        except providers.ProviderUnavailable as e:
+            raise AlpacaError(e.code, e.message)
+        try:
+            r = _http_get_snapshots({"symbols": ",".join(chunk), "feed": f})
+        except httpx.TimeoutException:
+            providers.failure(PROVIDER_ID)
+            raise AlpacaError("provider_timeout", "A Alpaca não respondeu a tempo.")
+        except httpx.HTTPError as e:
+            providers.failure(PROVIDER_ID)
+            raise AlpacaError("provider_unreachable", f"Não foi possível acessar a Alpaca ({type(e).__name__}).")
+        if r.status_code != 200:
+            if r.status_code in (403, 422) and _subscription_refusal(r):
+                raise AlpacaError("provider_subscription",
+                                  f"O plano da Alpaca não cobre cotações no feed {f} (HTTP {r.status_code}). "
+                                  "Use DP_ALPACA_QUOTE_FEED=iex.")
+            if r.status_code in (401, 403):
+                providers.failure(PROVIDER_ID)
+                raise AlpacaError("provider_auth", f"A Alpaca recusou a chave do servidor (HTTP {r.status_code}).")
+            if r.status_code == 429:
+                providers.failure(PROVIDER_ID, "rate_limited")
+                raise AlpacaError("rate_limited", "A Alpaca está limitando requisições (HTTP 429). Tente em um minuto.")
+            if r.status_code in (400, 422):
+                raise AlpacaError("provider_bad_request",
+                                  f"A Alpaca recusou o pedido (HTTP {r.status_code}): {_message(r) or 'sem detalhe'}")
+            providers.failure(PROVIDER_ID)
+            raise AlpacaError("provider_error", f"A Alpaca respondeu HTTP {r.status_code}.")
+        try:
+            body = r.json()
+        except ValueError:
+            providers.failure(PROVIDER_ID)
+            raise AlpacaError("bad_payload", "A Alpaca devolveu um formato inesperado.")
+        providers.success(PROVIDER_ID)
+        snaps = body.get("snapshots") if isinstance(body, dict) and isinstance(body.get("snapshots"), dict) else body
+        if not isinstance(snaps, dict):
+            raise AlpacaError("bad_payload", "A Alpaca devolveu um formato inesperado.")
+        for sym in chunk:
+            q = _snapshot_quote(sym, snaps.get(sym), f)
+            if q is None:
+                errors.append({"symbol": sym, "code": "no_data", "message": f"A Alpaca não tem cotação de {sym} no feed {f}."})
+            else:
+                quotes[sym] = q
+    return quotes, errors

@@ -89,6 +89,11 @@ class Settings(BaseSettings):
     # Alpaca feed: "sip" = consolidated tape of all US exchanges (the Basic plan serves it for data
     # older than 15 minutes, which is all this lab asks for); "iex" = one exchange, ~2% of volume.
     dp_alpaca_feed: Literal["sip", "iex"] = "sip"
+    # Quotes for the alerts (Bloco 5): "delayed_sip" = consolidated, 15 minutes late (free plan);
+    # "iex" = real time, one exchange only.
+    dp_alpaca_quote_feed: Literal["delayed_sip", "iex"] = "delayed_sip"
+    # Who supplies the alerts' quotes: auto (Alpaca with keys, else Yahoo), alpaca or yahoo. No fallback.
+    dp_quote_provider: Literal["auto", "alpaca", "yahoo"] = "auto"
 
     # Display policy (see services/policy.py). Empty = the default for the mode: everything
     # visible in the local demo, restrictive in the public lab. Applied by the API, not the UI.
@@ -114,6 +119,16 @@ class Settings(BaseSettings):
     @classmethod
     def _blank_is_sip(cls, v: object) -> object:
         return "sip" if isinstance(v, str) and not v.strip() else (v.strip().lower() if isinstance(v, str) else v)
+
+    @field_validator("dp_alpaca_quote_feed", mode="before")
+    @classmethod
+    def _blank_is_delayed_sip(cls, v: object) -> object:
+        return "delayed_sip" if isinstance(v, str) and not v.strip() else (v.strip().lower() if isinstance(v, str) else v)
+
+    @field_validator("dp_quote_provider", mode="before")
+    @classmethod
+    def _blank_quote_provider(cls, v: object) -> object:
+        return "auto" if isinstance(v, str) and not v.strip() else (v.strip().lower() if isinstance(v, str) else v)
 
     @field_validator("dp_show_raw_prices", "dp_show_trigger_prices", "dp_allow_unofficial_sources",
                      "dp_pelosi_public", mode="before")

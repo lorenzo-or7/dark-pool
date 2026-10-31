@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 
 from . import limits
 from .config import APP_VERSION, get_settings
-from .routers import journal, lab, market, system
+from .routers import alerts, journal, lab, market, system
 from .services import tasks  # noqa: F401 - registers the job handlers
 from .services.jobs import QueueFull, mark_interrupted_on_start, mark_orphans_failed_sqlite
 
@@ -85,7 +85,7 @@ def create_app() -> FastAPI:
                                         "message": errors[0]["message"] if errors else "Dados inválidos.",
                                         "errors": errors}}, status_code=422)
 
-    for r in (system.router, market.router, lab.router, journal.router):
+    for r in (system.router, market.router, lab.router, journal.router, alerts.router):
         app.include_router(r)
     return app
 

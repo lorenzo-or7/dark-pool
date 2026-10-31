@@ -8,7 +8,8 @@ Uso, a partir da raiz do projeto:
 Lê ALPACA_API_KEY_ID e ALPACA_API_SECRET_KEY de backend/.env (ou das variáveis de ambiente),
 pede as barras de 5 minutos do pregão regular de um dia e diz quantas vieram e se o campo t é o
 início da barra (a barra das 9:30 deve vir com t = 13:30Z no horário de verão de Nova York).
-Por padrão testa os dois feeds: SIP (consolidado; o plano gratuito serve dados com mais de 15 minutos,
+Depois testa as cotações dos alertas (snapshots, feeds delayed_sip e iex) e diz o formato da
+resposta. Por padrão testa os dois feeds de barras: SIP (consolidado; o plano gratuito serve dados com mais de 15 minutos,
 que é o padrão do laboratório, DP_ALPACA_FEED=sip) e IEX (uma bolsa só). Nunca imprime as chaves,
 nem parte delas.
 """
@@ -28,6 +29,7 @@ from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent.parent
 URL = "https://data.alpaca.markets/v2/stocks/bars"
+SNAPSHOTS_URL = "https://data.alpaca.markets/v2/stocks/snapshots"
 NY = ZoneInfo("America/New_York")
 
 
@@ -65,7 +67,35 @@ def main() -> int:
     worst = 0
     for f in feeds:
         worst = max(worst, check(a.symbol.upper(), day, f, key, secret))
+    for f in ("delayed_sip", "iex"):
+        worst = max(worst, check_quotes([a.symbol.upper(), "SPY"], f, key, secret))
     return worst
+
+
+def check_quotes(symbols: list[str], feed: str, key: str, secret: str) -> int:
+    """Cotações dos alertas: GET /v2/stocks/snapshots, vários símbolos numa requisição."""
+    q = urllib.parse.urlencode({"symbols": ",".join(symbols), "feed": feed})
+    req = urllib.request.Request(f"{SNAPSHOTS_URL}?{q}", headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret,
+                                                                  "Accept": "application/json"})
+    tag = f"[cotações {feed}]"
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            doc = json.load(r)
+    except urllib.error.HTTPError as e:
+        print(f"{tag} Falhou: HTTP {e.code}")
+        return 1
+    except urllib.error.URLError as e:
+        print(f"{tag} Falhou: não foi possível acessar a Alpaca ({e.reason}).")
+        return 1
+    wrapped = isinstance(doc, dict) and isinstance(doc.get("snapshots"), dict)
+    snaps = doc["snapshots"] if wrapped else doc
+    print(f"{tag} Formato: {'envelope snapshots' if wrapped else 'chaves por símbolo no topo'}.")
+    for sym in symbols:
+        sn = snaps.get(sym) if isinstance(snaps, dict) else None
+        t = (sn or {}).get("latestTrade") or {}
+        prev = ((sn or {}).get("prevDailyBar") or {}).get("c")
+        print(f"{tag} {sym}: último negócio {t.get('p')} em {t.get('t')}; fechamento anterior {prev}")
+    return 0
 
 
 def check(sym: str, day: dt.date, feed: str, key: str, secret: str) -> int:

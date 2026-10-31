@@ -22,7 +22,7 @@ router = APIRouter(prefix="/api")
 def health() -> dict:
     s = get_settings()
     engines = {}
-    for name in ("scanner", "timemachine", "entry", "exit", "budget", "risk", "news", "analyst"):
+    for name in ("scanner", "timemachine", "entry", "exit", "budget", "risk", "news", "analyst", "alerts"):
         try:
             script_path(name)
             engines[name] = "ok"

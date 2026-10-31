@@ -8,7 +8,7 @@ import re
 import uuid
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
 from .services.market_data import SYMBOL_RE
 
@@ -364,3 +364,49 @@ class OrbPlanRequest(Strict):
         if self.date > dt.date.today():
             raise ValueError("a data não pode estar no futuro")
         return self
+
+
+# ---------------------------------------------------------------- alerts (trader-alerts, Bloco 5)
+
+class AlertRule(Strict):
+    """One trader-alerts rule (the engine's own format; it validates again)."""
+    id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.:\-]{1,40}$")
+    type: Literal["above", "below", "stop", "target", "pct_move", "opening_bell", "time"]
+    symbol: Symbol | None = None
+    price: float | None = Field(default=None, gt=0, lt=1e6)
+    pct: float | None = Field(default=None, gt=0, le=100)
+    direction: Literal["up", "down"] | None = None
+    ref: float | None = Field(default=None, gt=0, lt=1e6)
+    at: str | None = None
+    label: str | None = Field(default=None, max_length=60)
+    before_close: bool | None = None
+    date: dt.date | None = None
+    rearm: bool | None = None
+    note: str | None = Field(default=None, max_length=120)
+
+    @field_validator("symbol")
+    @classmethod
+    def check_symbol(cls, v: str | None) -> str | None:
+        return None if v is None else _sym(v)
+
+    @field_validator("at")
+    @classmethod
+    def check_at(cls, v: str | None) -> str | None:
+        if v is not None and not HHMM.match(v):
+            raise ValueError("use HH:MM (horário de Nova York)")
+        return v
+
+    @field_serializer("date")
+    def ser_date(self, v: dt.date | None) -> str | None:
+        return v.isoformat() if v else None
+
+
+class AlertState(Strict):
+    """What already rang (rule id -> UTC stamp), kept by the visitor's browser."""
+    rung: dict[str, str] = Field(default_factory=dict, max_length=200)
+    last_check: str | None = Field(default=None, max_length=24)
+
+
+class AlertCheckRequest(Strict):
+    rules: list[AlertRule] = Field(min_length=1, max_length=50)
+    state: AlertState = Field(default_factory=AlertState)

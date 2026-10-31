@@ -243,3 +243,35 @@ da skill, MIT) continuam em dólares.
 Testes: `backend/tests/test_price_view.py` e `test_plan_orb.py` (fluxo público completo: plano →
 Time Machine pela regra → experimento, trades, job, lista e exports sem nenhum preço do provedor;
 mesma simulação pela regra e pelos preços digitados).
+
+---
+
+## Alertas: trader-alerts sob demanda, cotações de vários símbolos (Bloco 5)
+
+`POST /api/alerts/check` recebe as regras do visitante (formato do próprio trader-alerts: `above`,
+`below`, `stop`, `target`, `pct_move`, `opening_bell`, `time`; até 50) e o estado do que já disparou.
+As regras e o estado ficam no navegador (`localStorage`). O servidor busca as cotações, chama o
+`evaluate` do motor (puro, sem edição) e devolve o que disparou e o novo estado. Nada roda sozinho e
+nada é enviado para fora (sem e-mail, push ou webhook). A dica de `trader-broker` que o motor inclui
+nas mensagens é removida: o laboratório não tem corretora.
+
+| Item | Valor |
+|---|---|
+| Código | `routers/alerts.py`, `services/quotes.py`, `alpaca.fetch_snapshots()`; schema `AlertCheckRequest` |
+| Alpaca | `GET https://data.alpaca.markets/v2/stocks/snapshots?symbols=A,B,...&feed=...` (https://docs.alpaca.markets/reference/stocksnapshots-1): uma requisição para até 100 símbolos. Usa `latestTrade.p` (ou `dailyBar.c`), `dailyBar` e `prevDailyBar.c`. A página de referência não mostra o corpo; o parser aceita o exemplo da v2 (chaves por símbolo no topo) e um envelope `snapshots`. O teste real confirma qual (o `check_alpaca.py` informa o formato) |
+| Feed | `DP_ALPACA_QUOTE_FEED` = `delayed_sip` (padrão: consolidado com 15 min de atraso, na lista de feeds da referência) ou `iex` (tempo real, uma bolsa) |
+| Provedor | `DP_QUOTE_PROVIDER` = `auto` (Alpaca com chaves, senão Yahoo), `alpaca` ou `yahoo`. Sem troca automática |
+| Yahoo | Uma requisição por símbolo pela cota de `market_data.fetch_chart_raw` (`1d`/`5m`), lida pelo `parse_yahoo` do próprio motor. Sujeito a `DP_ALLOW_UNOFFICIAL_SOURCES` |
+| Stooq | Não é usado (o endpoint respondia 404 quando a skill foi escrita e não é uma API documentada). O motor continua com o código, sem edição |
+| Política | Com `DP_SHOW_RAW_PRICES` desligado, as mensagens trocam os preços por `[preço oculto]` e as cotações saem só com a variação %. A comparação usa os preços no servidor |
+| Falhas | Provedor desligado/sem chave/pausado/429 → 503; outros erros da Alpaca → 502 com o código (`provider_subscription` se o feed não for coberto); símbolo sem cotação → item em `errors`, os outros seguem |
+| Frontend | Painel "Alertas" no Dashboard: adicionar (acima de, abaixo de, variação %), sino de abertura, "Verificar agora". Sem verificação automática |
+
+Consumo de cota: 1 chamada da Alpaca por verificação (até 100 símbolos); no Yahoo, 1 por símbolo.
+
+Testes (`backend/tests/test_alerts_api.py`, fixtures; `frontend/src/components/app/AlertsPanel.test.tsx`):
+uma requisição para todos os símbolos e feed padrão, envelope e feed IEX, símbolo sem cotação, regras
+de outro dia sem download, nada dispara duas vezes com o estado devolvido, erros 403 de assinatura,
+401, 429 e 500 sem chaves, caminho Yahoo idêntico ao motor lendo os mesmos arquivos salvos da skill,
+validação (campos extras, preço negativo, horário inválido, mais de 50 regras), política do modo
+público e o painel guardando as regras no navegador e verificando só quando pedido.

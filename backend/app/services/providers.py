@@ -74,7 +74,7 @@ PROVIDERS: dict[str, Provider] = {p.id: p for p in (
              "library", "Calculado no servidor", "https://github.com/gerrymanoim/exchange_calendars",
              None, per_minute=None, per_day=None, published_limit="sem rede"),
     Provider("alpaca", "Alpaca Market Data (Basic)",
-             "Candles de 5 min para cálculo interno: Time Machine, backtests ORB e plano ORB",
+             "Candles de 5 min (Time Machine, backtests ORB, plano ORB) e cotações dos alertas, só para cálculo interno",
              "commercial", "Feed SIP (consolidado) com mais de 15 min no plano gratuito; IEX opcional",
              "https://alpaca.markets/disclosures",
              None, per_minute=150, per_day=None, published_limit="200 chamadas/min no histórico",
@@ -83,7 +83,7 @@ PROVIDERS: dict[str, Provider] = {p.id: p for p in (
 
 # Sources recorded on snapshots -> provider id.
 SOURCE_PROVIDER = {"yahoo": "yahoo", "fixture:day-trader-skill/TSLA-60d5m": "yahoo", "alpaca:iex": "alpaca",
-                   "alpaca:sip": "alpaca"}
+                   "alpaca:sip": "alpaca", "alpaca:delayed_sip": "alpaca"}
 
 
 def bars_provider(interval: str) -> str:
@@ -98,6 +98,14 @@ def bars_provider(interval: str) -> str:
     if choice == "auto":
         return "alpaca" if (s.alpaca_api_key_id and s.alpaca_api_secret_key) else "yahoo"
     return choice
+
+
+def quote_provider() -> str:
+    """Who supplies the alerts' quotes (DP_QUOTE_PROVIDER). No fallback."""
+    s = get_settings()
+    if s.dp_quote_provider == "auto":
+        return "alpaca" if (s.alpaca_api_key_id and s.alpaca_api_secret_key) else "yahoo"
+    return s.dp_quote_provider
 
 
 def intraday_summary() -> dict:
