@@ -1,17 +1,24 @@
-"""Alpaca Market Data, Basic plan (IEX feed): 5-minute bars for the server's own calculations.
+"""Alpaca Market Data, Basic plan: 5-minute bars for the server's own calculations.
 
-Documentation read on 2026-10-30:
+Documentation read on 2026-10-30 and 2026-10-31:
   https://docs.alpaca.markets/reference/stockbars (historical bars, several symbols)
   https://docs.alpaca.markets/us/reference/stockbarsingle-1 (same parameters, one symbol)
   https://docs.alpaca.markets/us/docs/about-market-data-api.md (Basic plan)
+  https://docs.alpaca.markets/us/docs/market-data-faq (SIP without a subscription)
 
   GET https://data.alpaca.markets/v2/stocks/bars, headers APCA-API-KEY-ID / APCA-API-SECRET-KEY.
   symbols, timeframe (5Min), start / end (RFC-3339, both inclusive), limit (1 to 10,000 data
   points per page, across all symbols; "the API may return less ... always check the
-  next_page_token"), adjustment (raw by default; here all), feed (sip by default; here iex),
-  sort, page_token. Response {bars: {SYM: [{t, o, h, l, c, v, n, vw}]}, next_page_token}.
+  next_page_token"), adjustment (raw by default; here all), feed (sip, iex, ...), sort,
+  page_token. Response {bars: {SYM: [{t, o, h, l, c, v, n, vw}]}, next_page_token}.
   Basic plan: real-time IEX, history since 2016, 200 historical calls per minute, and the
-  latest 15 minutes restricted (the default `end` for such users is "15 minutes before now").
+  latest 15 minutes restricted. The FAQ: "For historical queries, the end parameter must be at
+  least 15 minutes old to query SIP data without a subscription"; otherwise the body says
+  "subscription does not permit querying recent SIP data" (code 42210000).
+
+Feed (DP_ALPACA_FEED): "sip" by default, the consolidated tape of every US exchange, which the
+Basic plan serves for anything older than 15 minutes; this module never asks for newer data.
+"iex" (one exchange, about 2% of the volume, gaps on quiet stocks) stays available as a setting.
 
 What this module does, and what it refuses to do:
 
@@ -23,8 +30,8 @@ What this module does, and what it refuses to do:
   bar as complete only when it ends by that instant, and nothing pretends to be later than it is.
 - Bar timestamps are kept exactly as Alpaca sends them (bar start, UTC). Bars outside the regular
   session (pre-market, after-hours) are left out of the document and counted.
-- IEX is one exchange, not the consolidated tape. Quiet stocks have 5-minute slots with no IEX
-  trade, so no bar. Those gaps are measured (`session_quality`) and reported; they are never filled.
+- A 5-minute slot with no trade on the feed has no bar (rare on SIP for listed stocks, common on
+  IEX). Those gaps are measured (`session_quality`) and reported; they are never filled.
 - Errors never repeat the request headers, and any text that would be shown is scrubbed of the
   configured key and secret.
 """
@@ -42,9 +49,10 @@ from . import market_calendar as mcal
 from . import providers
 
 PROVIDER_ID = "alpaca"
-FEED = "iex"
-SOURCE = f"alpaca:{FEED}"
+FEEDS = ("sip", "iex")
+SOURCES = tuple(f"{PROVIDER_ID}:{f}" for f in FEEDS)
 ADJUSTMENT = "all"
+FEED_LABEL = {"sip": "SIP (consolidado das bolsas dos EUA)", "iex": "IEX (uma única bolsa)"}
 URL = "https://data.alpaca.markets/v2/stocks/bars"
 TIMEFRAME_5M = "5Min"
 BAR_S = 300
@@ -70,6 +78,29 @@ class AlpacaError(Exception):
 def configured() -> bool:
     s = get_settings()
     return bool(s.alpaca_api_key_id and s.alpaca_api_secret_key)
+
+
+def feed() -> str:
+    """The feed new downloads use (DP_ALPACA_FEED)."""
+    return get_settings().dp_alpaca_feed
+
+
+def source(f: str | None = None) -> str:
+    """The snapshot source of a feed: alpaca:sip or alpaca:iex."""
+    return f"{PROVIDER_ID}:{f or feed()}"
+
+
+def is_alpaca_source(src: str | None) -> bool:
+    return src in SOURCES
+
+
+def limitation(src: str | None) -> str:
+    """The plain-words caveat of an Alpaca snapshot, by feed."""
+    if src == source("iex"):
+        return ("Feed IEX (Alpaca, plano gratuito): uma única bolsa, não o consolidado. Volume muito menor que o do "
+                "mercado; horários sem negócio na IEX não têm candle e as sessões incompletas ficam de fora.")
+    return ("Feed SIP da Alpaca (consolidado das bolsas dos EUA), plano gratuito: só dados com mais de 15 minutos. "
+            "Horários sem negócio não têm candle e as sessões incompletas ficam de fora (nada é preenchido).")
 
 
 def scrub(text: str) -> str:
@@ -107,15 +138,28 @@ def _message(r: httpx.Response) -> str:
 
 # ---------------------------------------------------------------- download
 
-def fetch_bars(symbol: str, timeframe: str, start: dt.datetime, end: dt.datetime) -> list[dict]:
+def _subscription_refusal(r: httpx.Response) -> bool:
+    """Alpaca's 'subscription does not permit ...' answer (code 42210000), whatever the HTTP status."""
+    try:
+        body = r.json()
+    except Exception:  # noqa: BLE001
+        return False
+    if not isinstance(body, dict):
+        return False
+    return str(body.get("code")) == "42210000" or "subscription" in str(body.get("message", "")).lower()
+
+
+def fetch_bars(symbol: str, timeframe: str, start: dt.datetime, end: dt.datetime,
+               feed_name: str | None = None) -> list[dict]:
     """Every bar of one symbol between start and end (both inclusive), following next_page_token.
     Each page spends one call of the shared quota; a refusal stops the download (no partial data)."""
     try:
         providers.check_allowed(PROVIDER_ID)
     except providers.ProviderUnavailable as e:
         raise AlpacaError(e.code, e.message)
+    f = feed_name or feed()
     params = {"symbols": symbol, "timeframe": timeframe, "start": _rfc3339(start), "end": _rfc3339(end),
-              "limit": PAGE_LIMIT, "adjustment": ADJUSTMENT, "feed": FEED, "sort": "asc"}
+              "limit": PAGE_LIMIT, "adjustment": ADJUSTMENT, "feed": f, "sort": "asc"}
     out: list[dict] = []
     token: str | None = None
     for _ in range(MAX_PAGES):
@@ -145,6 +189,12 @@ def fetch_bars(symbol: str, timeframe: str, start: dt.datetime, end: dt.datetime
             if not token:
                 return out
             continue
+        if r.status_code in (403, 422) and _subscription_refusal(r):
+            # Not a key problem and not worth tripping the breaker: the plan does not cover this request.
+            raise AlpacaError("provider_subscription",
+                              f"O plano da Alpaca não cobre esse pedido no feed {f.upper()} (HTTP {r.status_code}). "
+                              "No plano gratuito o SIP só vale para dados com mais de 15 minutos; se persistir, "
+                              "use DP_ALPACA_FEED=iex.")
         if r.status_code in (401, 403):
             providers.failure(PROVIDER_ID)
             raise AlpacaError("provider_auth", f"A Alpaca recusou a chave do servidor (HTTP {r.status_code}). "
@@ -237,7 +287,7 @@ def _epoch(t: str) -> int:
     return int(dt.datetime.fromisoformat(t.replace("Z", "+00:00")).timestamp())
 
 
-def to_chart_document(symbol: str, bars: list[dict], window: Window) -> str:
+def to_chart_document(symbol: str, bars: list[dict], window: Window, feed_name: str = "sip") -> str:
     """Alpaca bars -> the Yahoo v8 chart layout the engines read, as deterministic JSON text.
 
     The snapshot hash is the SHA-256 of exactly this text, so it depends on: the bars kept
@@ -273,7 +323,7 @@ def to_chart_document(symbol: str, bars: list[dict], window: Window) -> str:
         "currency": "USD",
         "regularMarketTime": end_ts,
         "dataProvider": PROVIDER_ID,
-        "feed": FEED,
+        "feed": feed_name,
         "adjustment": ADJUSTMENT,
         "window": window.meta(),
         "leftOut": dropped,
@@ -338,8 +388,9 @@ def session_quality(text: str, before: dt.date | None = None) -> dict:
     in_progress = next((s for s in sessions if s["state"] == "in_progress"), None)
     pool = [s for s in complete if s["expected"] == FULL_SESSION_BARS
             and (before is None or dt.date.fromisoformat(s["date"]) < before)]
+    f = meta.get("feed") or "iex"
     return {
-        "provider": PROVIDER_ID, "feed": FEED, "adjustment": meta.get("adjustment"),
+        "provider": PROVIDER_ID, "feed": f, "adjustment": meta.get("adjustment"),
         "data_end": w.get("data_end"), "plan_day": w.get("plan_day"),
         "sessions_requested": w.get("sessions_requested"), "sessions": len(sessions),
         "closed_sessions": len(closed), "complete_sessions": len(complete),
@@ -351,9 +402,11 @@ def session_quality(text: str, before: dt.date | None = None) -> dict:
         "bars": len(stamps), "left_out": meta.get("leftOut") or {},
         "pool_sessions": len(pool), "engine_min_sessions": MIN_SESSIONS,
         "filled": False,
-        "note": ("Feed IEX: horários sem negócio na IEX não têm candle e não são preenchidos. Os motores usam só "
-                 "sessões encerradas com os 78 candles; as incompletas e as de fechamento antecipado ficam de fora. "
-                 "Uma sessão em andamento é contada à parte e não entra como incompleta."),
+        "note": (("Feed IEX: horários sem negócio na IEX não têm candle" if f == "iex" else
+                  "Feed SIP (consolidado): horários sem nenhum negócio não têm candle")
+                 + " e não são preenchidos. Os motores usam só sessões encerradas com os 78 candles; as incompletas e "
+                 "as de fechamento antecipado ficam de fora. Uma sessão em andamento é contada à parte e não entra "
+                 "como incompleta."),
     }
 
 
@@ -375,7 +428,8 @@ def entry_bar_check(text: str, day: dt.date, entry_time: str) -> str | None:
     if ts + BAR_S > data_end:
         return (f"O candle de entrada ({label}–{entry_time}) de {day.isoformat()} ainda não estava disponível: "
                 "a sessão estava em andamento e o plano gratuito tem 15 minutos de atraso.")
-    return (f"O feed IEX não tem candle das {label} em {day.isoformat()}: não houve negócio na IEX nesse intervalo. "
+    f = ((r0.get("meta") or {}).get("feed") or "iex").upper()
+    return (f"O feed {f} não tem candle das {label} em {day.isoformat()}: não houve negócio nesse intervalo. "
             "O laboratório não preenche lacunas; escolha outro horário ou outro dia.")
 
 
@@ -383,15 +437,17 @@ def entry_bar_check(text: str, day: dt.date, entry_time: str) -> str | None:
 
 def fetch_session_chart(symbol: str, day: dt.date | None, sessions: int = DEFAULT_SESSIONS,
                         now_utc: dt.datetime | None = None) -> tuple[str, dt.datetime, dict]:
-    """5-minute bars for the window -> (chart text, fetched_at, quality)."""
+    """5-minute bars for the window -> (chart text, fetched_at, quality). The feed is
+    DP_ALPACA_FEED at call time; the caller records source(feed) on the snapshot."""
+    f = feed()
     window = session_window(day, sessions, now_utc)
     fetched_at = (now_utc or _now()).replace(microsecond=0)
     # `end` is inclusive: stop one second before data_end so only complete bars come back.
     req_end = window.data_end - dt.timedelta(seconds=1)
     bars = providers.single_flight(
-        (PROVIDER_ID, symbol, TIMEFRAME_5M, window.start.isoformat(), window.data_end.isoformat()),
-        lambda: fetch_bars(symbol, TIMEFRAME_5M, window.start, req_end))
+        (PROVIDER_ID, f, symbol, TIMEFRAME_5M, window.start.isoformat(), window.data_end.isoformat()),
+        lambda: fetch_bars(symbol, TIMEFRAME_5M, window.start, req_end, f))
     if not bars:
-        raise AlpacaError("no_data", f"A Alpaca não tem candles de {symbol} no feed IEX nesse período.")
-    text = to_chart_document(symbol, bars, window)
+        raise AlpacaError("no_data", f"A Alpaca não tem candles de {symbol} no feed {f.upper()} nesse período.")
+    text = to_chart_document(symbol, bars, window, f)
     return text, fetched_at, session_quality(text)

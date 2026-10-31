@@ -240,7 +240,7 @@ export type Quote = {
   prices_hidden?: boolean
 }
 
-/** One NYSE session in an Alpaca (IEX) snapshot, counted against what the session has. */
+/** One NYSE session in an Alpaca snapshot, counted against what the session has. */
 export type QualitySession = {
   date: string
   state: 'closed' | 'in_progress' | 'not_started'
@@ -277,4 +277,10 @@ export type DataQuality = {
 }
 
 /** GET /api/workspace -> intraday_provider: who supplies new 5-minute bars (set on the server). */
-export type IntradayProvider = { setting: 'auto' | 'alpaca' | 'yahoo'; provider: 'alpaca' | 'yahoo'; daily_provider: 'yahoo' }
+export type IntradayProvider = {
+  setting: 'auto' | 'alpaca' | 'yahoo'
+  provider: 'alpaca' | 'yahoo'
+  /** Alpaca feed (DP_ALPACA_FEED); null when the provider is Yahoo */
+  feed?: 'sip' | 'iex' | null
+  daily_provider: 'yahoo'
+}

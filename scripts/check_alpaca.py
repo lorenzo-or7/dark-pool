@@ -1,13 +1,16 @@
-"""Teste de fumaça das chaves da Alpaca (plano Basic, feed IEX). Só leitura, nenhuma ordem.
+"""Teste de fumaça das chaves da Alpaca (plano Basic, feeds SIP e IEX). Só leitura, nenhuma ordem.
 
 Uso, a partir da raiz do projeto:
     backend\\.venv\\Scripts\\python.exe scripts\\check_alpaca.py
     backend\\.venv\\Scripts\\python.exe scripts\\check_alpaca.py --symbol AAPL --date 2026-10-19
+    backend\\.venv\\Scripts\\python.exe scripts\\check_alpaca.py --feed sip
 
 Lê ALPACA_API_KEY_ID e ALPACA_API_SECRET_KEY de backend/.env (ou das variáveis de ambiente),
 pede as barras de 5 minutos do pregão regular de um dia e diz quantas vieram e se o campo t é o
 início da barra (a barra das 9:30 deve vir com t = 13:30Z no horário de verão de Nova York).
-Nunca imprime as chaves, nem parte delas.
+Por padrão testa os dois feeds: SIP (consolidado; o plano gratuito serve dados com mais de 15 minutos,
+que é o padrão do laboratório, DP_ALPACA_FEED=sip) e IEX (uma bolsa só). Nunca imprime as chaves,
+nem parte delas.
 """
 
 from __future__ import annotations
@@ -47,6 +50,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--symbol", default="TSLA")
     ap.add_argument("--date", default="2026-10-19", help="um dia de pregão (AAAA-MM-DD)")
+    ap.add_argument("--feed", choices=("both", "sip", "iex"), default="both")
     a = ap.parse_args()
 
     env = read_env()
@@ -57,43 +61,59 @@ def main() -> int:
     print("Chaves encontradas (não são exibidas).")
 
     day = dt.date.fromisoformat(a.date)
+    feeds = ["sip", "iex"] if a.feed == "both" else [a.feed]
+    worst = 0
+    for f in feeds:
+        worst = max(worst, check(a.symbol.upper(), day, f, key, secret))
+    return worst
+
+
+def check(sym: str, day: dt.date, feed: str, key: str, secret: str) -> int:
     start = dt.datetime.combine(day, dt.time(9, 30), NY).astimezone(dt.UTC)
     # `end` é inclusivo: 15:59:59 deixa de fora a barra das 16:00 (after-hours).
     end = dt.datetime.combine(day, dt.time(15, 59, 59), NY).astimezone(dt.UTC)
-    q = urllib.parse.urlencode({"symbols": a.symbol.upper(), "timeframe": "5Min", "feed": "iex",
+    q = urllib.parse.urlencode({"symbols": sym, "timeframe": "5Min", "feed": feed,
                                 "adjustment": "all", "limit": 1000,
                                 "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
                                 "end": end.strftime("%Y-%m-%dT%H:%M:%SZ")})
     req = urllib.request.Request(f"{URL}?{q}", headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret,
                                                         "Accept": "application/json"})
+    tag = f"[{feed.upper()}]"
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             doc = json.load(r)
     except urllib.error.HTTPError as e:
+        try:
+            msg = str(json.loads(e.read().decode("utf-8", "replace")).get("message", ""))[:160]
+        except Exception:  # noqa: BLE001
+            msg = ""
         hint = {401: "chave ou secret incorretos", 403: "chave sem permissão para dados de mercado",
                 429: "limite de requisições atingido; tente em um minuto"}.get(e.code, "")
-        print(f"Falhou: HTTP {e.code} {hint}".strip())
+        if "subscription" in msg.lower():
+            hint = "o plano não cobre esse feed/período"
+        print(f"{tag} Falhou: HTTP {e.code} {hint}".strip() + (f" ({msg})" if msg else ""))
         return 1
     except urllib.error.URLError as e:
-        print(f"Falhou: não foi possível acessar a Alpaca ({e.reason}).")
+        print(f"{tag} Falhou: não foi possível acessar a Alpaca ({e.reason}).")
         return 1
 
-    bars = (doc.get("bars") or {}).get(a.symbol.upper()) or []
-    print(f"OK: {len(bars)} barras de 5 min de {a.symbol.upper()} em {a.date} (feed IEX). Um pregão completo tem 78.")
+    bars = (doc.get("bars") or {}).get(sym) or []
+    vol = sum(int(b.get("v") or 0) for b in bars)
+    print(f"{tag} OK: {len(bars)} barras de 5 min de {sym} em {day} (volume somado {vol:,}). "
+          "Um pregão completo tem 78.")
     if bars:
         t0 = dt.datetime.fromisoformat(bars[0]["t"].replace("Z", "+00:00")).astimezone(NY)
         t1 = dt.datetime.fromisoformat(bars[-1]["t"].replace("Z", "+00:00")).astimezone(NY)
-        print(f"Primeira barra {t0:%H:%M} (t = {bars[0]['t']}), última {t1:%H:%M} (horário de Nova York).")
+        print(f"{tag} Primeira barra {t0:%H:%M} (t = {bars[0]['t']}), última {t1:%H:%M} (horário de Nova York).")
         if t0.strftime("%H:%M") == "09:30" and t1.strftime("%H:%M") <= "15:55":
-            print("Confere: t é o início da barra (a barra 9:30-9:35 vem com t = 9:30).")
+            print(f"{tag} Confere: t é o início da barra (a barra 9:30-9:35 vem com t = 9:30).")
         else:
-            print("ATENÇÃO: não deu para confirmar que t é o início da barra. Informe estas duas linhas.")
+            print(f"{tag} ATENÇÃO: não deu para confirmar que t é o início da barra. Informe estas linhas.")
         off = [b["t"] for b in bars
                if dt.datetime.fromisoformat(b["t"].replace("Z", "+00:00")).timestamp() % 300]
         if off:
-            print(f"ATENÇÃO: {len(off)} barra(s) fora da grade de 5 minutos.")
+            print(f"{tag} ATENÇÃO: {len(off)} barra(s) fora da grade de 5 minutos.")
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

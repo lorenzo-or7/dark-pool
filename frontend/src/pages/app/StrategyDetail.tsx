@@ -52,7 +52,7 @@ function BacktestDialog({ s, open, onOpenChange }: { s: Strategy; open: boolean;
           )}
         </Field>
         {orb && !snap && intraday?.provider === 'alpaca' && (
-          <Field label="Sessões de histórico" hint="Últimas sessões encerradas da NYSE (20 a 250). Sessões com lacunas no IEX ficam de fora.">
+          <Field label="Sessões de histórico" hint="Últimas sessões encerradas da NYSE (20 a 250). Sessões com candles faltando ficam de fora.">
             {(p) => (
               <Input {...p} type="number" min={20} max={250} value={sessions} onChange={(e) => setSessions(Number(e.target.value))} />
             )}

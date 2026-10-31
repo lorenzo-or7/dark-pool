@@ -376,7 +376,7 @@ def snapshot_sessions(sid: uuid.UUID, user: CurrentUser = Depends(current_user))
         raise bad_request("O replay usa snapshots de candles de 5 minutos.")
     days = _session_bars(chart)
     quality = None
-    if s["source"] == alpaca.SOURCE:
+    if alpaca.is_alpaca_source(s["source"]):
         quality = alpaca.session_quality(md.read_snapshot_text(s["sha256"], user.workspace_id))
     return {"snapshot": ser(s), "sessions": [{"date": d, "bars": len(v), "full": len(v) == 78}
                                              for d, v in sorted(days.items())],

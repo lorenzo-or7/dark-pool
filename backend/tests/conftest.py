@@ -18,6 +18,7 @@ def no_real_alpaca_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ALPACA_API_KEY_ID", "")
     monkeypatch.setenv("ALPACA_API_SECRET_KEY", "")
     monkeypatch.setenv("DP_INTRADAY_PROVIDER", "auto")
+    monkeypatch.setenv("DP_ALPACA_FEED", "sip")
 
 
 @pytest.fixture()

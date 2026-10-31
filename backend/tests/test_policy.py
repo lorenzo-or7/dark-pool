@@ -169,7 +169,7 @@ def test_provider_status_never_contains_keys(public_default: TestClient) -> None
     assert src["yahoo"]["status_code"] == "source_disabled"
     assert src["alpaca"]["status_code"] == "active"  # key present (sentinel), adapter integrated in Bloco 3
     intraday = c.get("/api/workspace").json()["intraday_provider"]
-    assert intraday == {"setting": "auto", "provider": "alpaca", "daily_provider": "yahoo"}
+    assert intraday == {"setting": "auto", "provider": "alpaca", "feed": "sip", "daily_provider": "yahoo"}
     assert src["sec_edgar"]["status_code"] == "needs_config"
     assert src["exchange_calendars"]["status_code"] == "active"
     assert all({"name", "use", "status", "tone", "last_fetch", "usage"} <= set(d) for d in src.values())

@@ -462,7 +462,7 @@ function Simulation({ initialExp }: { initialExp: string | null }) {
             )}
           </Field>
           {!f.snapshot_id && intraday?.provider === 'alpaca' && (
-            <Field label="Sessões de histórico" hint="Sessões da NYSE antes do dia do plano (20 a 250). Sessões com lacunas no IEX ficam de fora.">
+            <Field label="Sessões de histórico" hint="Sessões da NYSE antes do dia do plano (20 a 250). Sessões com candles faltando ficam de fora.">
               {(p) => (
                 <Input
                   {...p}

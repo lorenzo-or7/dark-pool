@@ -1,4 +1,4 @@
-"""Bloco 3: Alpaca adapter (IEX feed) for the Time Machine and ORB backtests.
+"""Bloco 3: Alpaca adapter (SIP feed by default, IEX by setting) for the Time Machine and ORB backtests.
 
 Everything here runs on the DERIVED fixture of tests/alpaca_fixtures.py (Yahoo bars from the
 skill's file rewritten in Alpaca's format) and a fake HTTP layer. No test here proves that the
@@ -70,9 +70,10 @@ def _engine_doc(text: str, now_utc: dt.datetime) -> dict:
     return tm.time_machine(text, plan, now_utc.replace(tzinfo=None), replays=10000, seed=19)
 
 
-def _doc(bars: list[dict], window) -> str:  # noqa: ANN001
+def _doc(bars: list[dict], window, feed: str = "iex") -> str:  # noqa: ANN001
+    """The golden documents below were pinned with the IEX feed (Bloco 3, first version)."""
     from app.services import alpaca
-    return alpaca.to_chart_document("TSLA", bars, window)
+    return alpaca.to_chart_document("TSLA", bars, window, feed)
 
 
 # ---------------------------------------------------------------- window on the NYSE calendar
@@ -149,7 +150,7 @@ def test_deterministic_json_with_fixed_data_and_metadata(settings_env: Path) -> 
     random.Random(3).shuffle(shuffled)
     assert _doc(shuffled, w) == text
     assert alpaca.to_chart_document("TSLA", copy.deepcopy(GOLDEN_BARS), alpaca.session_window(
-        None, 20, fx.edt("2026-10-16", "23:59"))) == text                 # same window, other download time
+        None, 20, fx.edt("2026-10-16", "23:59")), "iex") == text                # same window, other download time
     # any price, volume or window change changes the hash
     assert _doc([dict(GOLDEN_BARS[0], c=101.01), *GOLDEN_BARS[1:]], w) != text
     assert _doc([dict(GOLDEN_BARS[0], v=1201), *GOLDEN_BARS[1:]], w) != text
@@ -167,9 +168,13 @@ def test_golden_hash_is_stable(settings_env: Path) -> None:
     only on purpose, with a note in docs/INTEGRACOES.md."""
     text = _doc(GOLDEN_BARS, _golden_window())
     assert hashlib.sha256(text.encode()).hexdigest() == PINNED_SHA, text
+    sip = _doc(GOLDEN_BARS, _golden_window(), "sip")
+    assert json.loads(sip)["chart"]["result"][0]["meta"]["feed"] == "sip"
+    assert hashlib.sha256(sip.encode()).hexdigest() == PINNED_SHA_SIP, sip
 
 
 PINNED_SHA = "75b13b2aabad49ed7d994e681b28639a151ac5e89d75323af612417df6bbbf33"
+PINNED_SHA_SIP = "938a9c34af7c452388019edc5231f528366dafd5000d40ba07cf13bc3a868220"
 
 
 def test_conversion_keeps_real_timestamps_and_marks_data_end(settings_env: Path) -> None:
@@ -225,7 +230,7 @@ def test_pagination_follows_next_page_token_and_spends_one_call_per_page(fake: f
     assert len(bars) == len(fx.derived_bars()) and len(fake.calls) == -(-len(bars) // 700)
     assert [c.get("page_token") for c in fake.calls][:3] == [None, "700", "1400"]
     c0 = fake.calls[0]
-    assert (c0["feed"], c0["adjustment"], c0["timeframe"], c0["limit"], c0["sort"]) == ("iex", "all", "5Min", 10000, "asc")
+    assert (c0["feed"], c0["adjustment"], c0["timeframe"], c0["limit"], c0["sort"]) == ("sip", "all", "5Min", 10000, "asc")
     assert c0["end"] == "2026-10-19T14:49:59Z"                         # inclusive end: 1 s before data_end
     usage = {p["id"]: p["usage"] for p in providers.status()}["alpaca"]
     assert usage["minute"] == len(fake.calls)
@@ -363,13 +368,13 @@ def test_time_machine_end_to_end_with_alpaca(api: TestClient, fake: fx.FakeAlpac
     res = e["results"]
     assert res["mc"] == ref["mc"] and res["history"] == ref["history"] and res["verdict"] == ref["verdict"]
     snap = res["snapshot"]
-    assert snap["source"] == "alpaca:iex" and snap["is_fixture"] is False
-    assert snap["provenance"]["provider"] == "alpaca" and snap["provenance"]["feed"] == "iex"
+    assert snap["source"] == "alpaca:sip" and snap["is_fixture"] is False
+    assert snap["provenance"]["provider"] == "alpaca" and snap["provenance"]["feed"] == "sip"
     q = res["data_quality"]
-    assert q["feed"] == "iex" and q["pool_sessions"] == 59 and q["in_progress_session"]["date"] == "2026-10-19"
-    assert any("IEX" in x for x in res["limitations"])
+    assert q["feed"] == "sip" and q["pool_sessions"] == 59 and q["in_progress_session"]["date"] == "2026-10-19"
+    assert any("SIP" in x for x in res["limitations"])
     row = [s for s in api.get("/api/snapshots?symbol=TSLA&interval=5m", headers=DEMO).json() if s["id"] == snap["id"]][0]
-    assert row["range"] == "60sess" and row["source"] == "alpaca:iex"
+    assert row["range"] == "60sess" and row["source"] == "alpaca:sip"
     assert row["fetched_at"].startswith("2026-10-19T15:06")
 
     # reproduce from the frozen snapshot: no new download, same numbers, same hash and quality
@@ -405,7 +410,7 @@ def test_orb_backtest_end_to_end_with_alpaca(api: TestClient, fake: fx.FakeAlpac
     assert j["status"] == "succeeded", j.get("error")
     e = api.get(f"/api/experiments/{r['experiment_id']}", headers=DEMO).json()
     res = e["results"]
-    assert res["snapshot"]["source"] == "alpaca:iex"
+    assert res["snapshot"]["source"] == "alpaca:sip"
     assert res["data_quality"]["sessions"] == 60 and res["data_quality"]["in_progress_session"] is None
     assert res["sessions"] == ref_res["results"]["sessions"] == 59
     strip = lambda ts: [{k: v for k, v in t.items() if k not in ("id", "experiment_id", "created_at")} for t in ts]  # noqa: E731
@@ -511,7 +516,61 @@ def test_check_script_never_prints_any_part_of_the_keys(tmp_path: Path, monkeypa
     out = capsys.readouterr().out
     for part in (key, secret, key[:2], key[-2:], secret[:2], secret[-2:]):
         assert part not in out, part
-    assert "OK: 78 barras" in out and "início da barra" in out
+    assert out.count("OK: 78 barras") == 2 and "[SIP]" in out and "[IEX]" in out and "início da barra" in out
+
+
+@pytest.mark.parametrize("status", [403, 422])
+def test_subscription_refusal_is_not_a_key_problem(keys: None, monkeypatch: pytest.MonkeyPatch, status: int) -> None:
+    """Alpaca's 'subscription does not permit querying recent SIP data' (code 42210000, from the
+    market data FAQ) gets its own code and message, and does not trip the circuit breaker."""
+    from app.services import alpaca, providers
+    body = {"code": 42210000, "message": "subscription does not permit querying recent SIP data"}
+    monkeypatch.setattr(alpaca, "_http_get", fx.FakeAlpaca([], status=status, body=body))
+    for _ in range(4):
+        with pytest.raises(alpaca.AlpacaError) as e:
+            alpaca.fetch_bars("TSLA", "5Min", fx.edt("2026-10-16", "09:30"), fx.edt("2026-10-16", "15:59"))
+        assert e.value.code == "provider_subscription" and "DP_ALPACA_FEED=iex" in e.value.message
+    st = {p["id"]: p for p in providers.status()}["alpaca"]
+    assert st["status_code"] != "provider_paused"
+
+
+def test_iex_feed_by_setting_end_to_end(fake: fx.FakeAlpaca, monkeypatch: pytest.MonkeyPatch) -> None:
+    """DP_ALPACA_FEED=iex: requests ask for IEX, snapshots say alpaca:iex, and an IEX snapshot
+    taken before the default changed still reproduces with its own label."""
+    from app.main import create_app
+    from app.services import market_data as md
+    monkeypatch.setenv("DP_ALPACA_FEED", "iex")
+    _reset()
+    monkeypatch.setattr(md, "fetch_chart_raw", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no Yahoo")))
+    with TestClient(create_app()) as api:
+        r = api.post("/api/timemachine", json={**PLAN, "history_sessions": 60}, headers=DEMO).json()
+        j = wait_job(api, r["job"]["id"])
+        assert j["status"] == "succeeded", j.get("error")
+        res = api.get(f"/api/experiments/{r['experiment_id']}", headers=DEMO).json()["results"]
+        assert {c["feed"] for c in fake.calls} == {"iex"}
+        assert res["snapshot"]["source"] == "alpaca:iex" and res["data_quality"]["feed"] == "iex"
+        assert any("IEX" in x for x in res["limitations"])
+        sid = res["snapshot"]["id"]
+        ws = api.get("/api/workspace", headers=DEMO).json()
+        assert ws["intraday_provider"] == {"setting": "auto", "provider": "alpaca", "feed": "iex",
+                                           "daily_provider": "yahoo"}
+    monkeypatch.setenv("DP_ALPACA_FEED", "sip")
+    from app import config
+    config.get_settings.cache_clear()
+    with TestClient(create_app()) as api:
+        calls = len(fake.calls)
+        r = api.post("/api/timemachine", json={**PLAN, "snapshot_id": sid}, headers=DEMO).json()
+        assert wait_job(api, r["job"]["id"])["status"] == "succeeded"
+        res2 = api.get(f"/api/experiments/{r['experiment_id']}", headers=DEMO).json()["results"]
+        assert len(fake.calls) == calls and res2["mc"] == res["mc"]
+        assert res2["snapshot"]["source"] == "alpaca:iex" and res2["data_quality"]["feed"] == "iex"
+
+
+def test_blank_feed_setting_means_sip(settings_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import alpaca
+    monkeypatch.setenv("DP_ALPACA_FEED", " ")
+    _reset()
+    assert alpaca.feed() == "sip" and alpaca.source() == "alpaca:sip"
 
 
 # ---------------------------------------------------------------- live smoke test (real keys only)

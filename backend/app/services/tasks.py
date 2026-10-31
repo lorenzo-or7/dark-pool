@@ -154,15 +154,16 @@ def _snapshot_for(ctx: JobContext, symbol: str, snapshot_id: str | None, rng: st
     if providers.bars_provider(interval) == alpaca.PROVIDER_ID:
         n = int(sessions or alpaca.DEFAULT_SESSIONS)
         day = datetime.strptime(plan_day, "%Y-%m-%d").date() if plan_day else None
-        ctx.progress(10, f"Baixando {n} sessões de candles de 5 min de {symbol} (Alpaca, feed IEX)")
+        ctx.progress(10, f"Baixando {n} sessões de candles de 5 min de {symbol} "
+                         f"(Alpaca, feed {alpaca.feed().upper()})")
         try:
-            text, fetched, _ = alpaca.fetch_session_chart(symbol, day, n)
+            text, fetched, quality = alpaca.fetch_session_chart(symbol, day, n)
         except alpaca.AlpacaError as e:
             raise JobFailure(e.message, e.code)
         try:
             with tx(ctx.user.id, ctx.user.email) as conn:
                 row = md.freeze_snapshot(conn, ctx.user.workspace_id, ctx.user.id, text, symbol, interval,
-                                         f"{n}sess", alpaca.SOURCE, fetched)
+                                         f"{n}sess", alpaca.source(quality["feed"]), fetched)
         except md.DataError as e:
             raise JobFailure(e.message, e.code)
         return row, text
@@ -181,18 +182,14 @@ def _snapshot_for(ctx: JobContext, symbol: str, snapshot_id: str | None, rng: st
 
 
 def _data_quality(snap: dict, text: str, before: str | None = None) -> dict | None:
-    """The IEX coverage report of an Alpaca snapshot, recomputed from the frozen text (so a
+    """The coverage report of an Alpaca snapshot, recomputed from the frozen text (so a
     reproduction shows the same report). None for other sources."""
-    if snap.get("source") != alpaca.SOURCE:
+    if not alpaca.is_alpaca_source(snap.get("source")):
         return None
     try:
         return alpaca.session_quality(text, datetime.strptime(before, "%Y-%m-%d").date() if before else None)
     except (KeyError, ValueError, TypeError):
         return None
-
-
-IEX_LIMITATION = ("Feed IEX (Alpaca, plano gratuito): uma única bolsa, não o consolidado. Volume menor que o do "
-                  "mercado; horários sem negócio na IEX não têm candle e as sessões incompletas ficam de fora.")
 
 
 def _set_experiment(ctx: JobContext, exp_id: uuid.UUID, **values: object) -> None:
@@ -241,7 +238,7 @@ def timemachine_run(ctx: JobContext) -> dict:
             raise JobFailure(why, "entry_bar_missing")
         if quality["pool_sessions"] < alpaca.MIN_SESSIONS:
             raise JobFailure(
-                f"Só {quality['pool_sessions']} sessões completas (78 candles) antes de {p['date']} no feed IEX; "
+                f"Só {quality['pool_sessions']} sessões completas (78 candles) antes de {p['date']} no feed {quality['feed'].upper()}; "
                 f"o Time Machine precisa de {alpaca.MIN_SESSIONS}. {len(quality['incomplete_sessions'])} sessões "
                 "encerradas tiveram lacunas e ficaram de fora. Peça mais sessões de histórico.", "not_enough_sessions")
     ctx.workdir.mkdir(parents=True, exist_ok=True)
@@ -278,7 +275,7 @@ def timemachine_run(ctx: JobContext) -> dict:
             "Os candles de 5 min são sorteados um a um, sem dependência entre eles: tendência e mudanças de volatilidade do dia não são modeladas.",
             "Gap através do stop conta como -1R; um candle que toca stop e alvo conta como stop. Sem custos nem slippage.",
             "Eventos ausentes da janela (resultados, notícias, suspensões) não aparecem nas simulações.",
-            *([IEX_LIMITATION] if quality is not None else []),
+            *([alpaca.limitation(snap.get("source"))] if quality is not None else []),
         ],
     }
     with tx(ctx.user.id, ctx.user.email) as conn:
@@ -336,7 +333,7 @@ def backtest_run(ctx: JobContext) -> dict:
         quality = _data_quality(snap, text)
         if quality is not None:
             out["data_quality"] = quality
-            out["assumptions"] = [*out["assumptions"], IEX_LIMITATION]
+            out["assumptions"] = [*out["assumptions"], alpaca.limitation(snap.get("source"))]
     elif rule in DAILY_RULES:
         snap, text = _snapshot_for(ctx, symbol, p.get("snapshot_id"), p.get("range", "2y"), "1d")
         ctx.progress(50, "Calculando sinais sem informação futura")

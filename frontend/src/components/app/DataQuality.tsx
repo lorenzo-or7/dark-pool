@@ -2,7 +2,7 @@ import { Badge } from '@/components/ui/badge'
 import { localDateTime, shortDate } from '@/lib/format'
 import type { DataQuality } from '@/lib/types'
 
-/** Coverage of an Alpaca (IEX) snapshot: complete, incomplete (gaps, not filled) and in-progress sessions. */
+/** Coverage of an Alpaca snapshot (SIP or IEX feed): complete, incomplete (gaps, not filled) and in-progress sessions. */
 export function DataQualityPanel({ q }: { q: DataQuality }) {
   const inc = q.incomplete_sessions
   return (
