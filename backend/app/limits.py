@@ -119,7 +119,10 @@ def check(request: Request) -> JSONResponse | None:
     retry = windows.hit("all", client, s.dp_rate_limit_per_min)
     if retry:
         return _too_many(retry, "Muitas requisições em pouco tempo. Aguarde alguns segundos.")
-    if method == "GET" and path.startswith(HEAVY_PREFIXES) and (path == "/api/quotes" or path.endswith(HEAVY_SUFFIXES)):
+    heavy_get = method == "GET" and path.startswith(HEAVY_PREFIXES) and (
+        path == "/api/quotes" or path.endswith(HEAVY_SUFFIXES))
+    # The ORB plan downloads the day's bars when no snapshot is given.
+    if heavy_get or (method == "POST" and path == "/api/plan/orb"):
         retry = windows.hit("heavy", client, s.dp_rate_limit_heavy_per_min)
         if retry:
             return _too_many(retry, "Muitas consultas de mercado em pouco tempo. Aguarde alguns segundos.")

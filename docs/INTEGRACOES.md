@@ -183,3 +183,30 @@ O teste real (`test_live_alpaca_smoke`) só roda com `DP_LIVE_ALPACA=1` e chaves
   Confirma o que a documentação não diz explicitamente: que `t` é o início da barra (9:30 → 13:30Z
   no horário de verão).
 - Confirmação por escrito da Alpaca sobre uso do plano Basic num site público (só cálculo no servidor).
+
+---
+
+## Entry e Exit no plano ORB (Bloco 4)
+
+Rota: `POST /api/plan/orb`. Motores: `trader-entry` (gatilho) e `trader-exit` (stop, alvo), chamados
+como funções puras; nenhum motor foi editado.
+
+| Item | Valor |
+|---|---|
+| Entradas | `snapshot_id` **ou** `symbol` + `date`; `or_minutes`; `stop_rule` (`or_mid`, `or_low`, `pct`, `atr`); `stop_pct`; `atr_k` (padrão 1,5); `target_r` |
+| Stop por ATR | `atr:K` do `trader-exit`: `exit.atr_of` sobre as barras fechadas da sessão até o candle de entrada (`exit.session_bars`), até 14 barras; menos de 3 barras é recusa do motor. Mesmos números do CLI `exit.py plan --stop atr:K` (teste `test_atr_stop_matches_the_exit_engine`) |
+| Sem snapshot | Baixa só a sessão do dia pelo provedor de 5 min configurado (`providers.bars_provider("5m")`): Alpaca, da abertura até o fechamento ou até agora − 16 min (`alpaca.day_window`), uma chamada; ou Yahoo (60 dias), onde a política permitir. Congela um snapshot (`range = "1sess"` na Alpaca) e devolve o `snapshot_id`; repetir com ele não baixa de novo |
+| Avaliação | Uma vez por pedido, no fechamento da sessão ou no fim dos dados, o que vier antes. Sessão em andamento sem gatilho = `waiting`, não `expired` |
+| Saídas | `plan` (entrada, stop, alvo, risco, regra e rótulo do stop; `atr`, `atr_bars`, `atr_k` no stop por ATR), `trigger`, `opening_range`, `data` (snapshot, fonte, proveniência, qualidade do IEX, horário de avaliação, nota de atraso) |
+| Limites | Conta no limite "heavy" por IP (`DP_RATE_LIMIT_HEAVY_PER_MIN`) e na cota compartilhada do provedor |
+| Falhas | Dia ainda indisponível na Alpaca: 409 `not_available_yet`; chave recusada: 502 `provider_auth`; Yahoo desligado pela política: 503 `source_disabled`. Sem troca de provedor |
+
+Não implementado de propósito: monitoramento contínuo do gatilho (exige WebSocket e servidor sempre
+ligado; etapa H) e stop por ATR nas estratégias ORB, porque o backtest ORB e o histórico do Time Machine
+não têm essa regra. O plano de um dia sozinho não serve como snapshot do Time Machine, que precisa de
+pelo menos 20 sessões anteriores.
+
+Preços do gatilho e do range continuam na resposta: a ocultação (`DP_SHOW_TRIGGER_PRICES`) depende da
+proposta de gráficos do modo público, ainda não aprovada.
+
+Testes: `backend/tests/test_orb_plan.py` (snapshot da skill e fixture DERIVADA da Alpaca com HTTP falso).

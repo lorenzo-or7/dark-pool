@@ -381,10 +381,21 @@ def entry_bar_check(text: str, day: dt.date, entry_time: str) -> str | None:
 
 # ---------------------------------------------------------------- one call for the jobs
 
-def fetch_session_chart(symbol: str, day: dt.date | None, sessions: int = DEFAULT_SESSIONS,
-                        now_utc: dt.datetime | None = None) -> tuple[str, dt.datetime, dict]:
-    """5-minute bars for the window -> (chart text, fetched_at, quality)."""
-    window = session_window(day, sessions, now_utc)
+def day_window(day: dt.date, now_utc: dt.datetime | None = None) -> Window:
+    """Only the plan's own session (the ORB plan of one day): from its open until its close, or
+    until now minus 16 minutes if it is still going on."""
+    limit = available_until(now_utc)
+    if not mcal._calendar().is_session(day.isoformat()):
+        raise AlpacaError("market_closed", f"A NYSE não abriu em {day.isoformat()}.")
+    o, c = _open_close(day)
+    if o >= limit:
+        raise AlpacaError("not_available_yet",
+                          f"Os candles de {day.isoformat()} ainda não estão disponíveis: o plano gratuito da "
+                          "Alpaca libera os dados com 15 minutos de atraso.")
+    return Window(day, (day,), o, min(c, limit), 1)
+
+
+def _fetch_window(symbol: str, window: Window, now_utc: dt.datetime | None) -> tuple[str, dt.datetime, dict]:
     fetched_at = (now_utc or _now()).replace(microsecond=0)
     # `end` is inclusive: stop one second before data_end so only complete bars come back.
     req_end = window.data_end - dt.timedelta(seconds=1)
@@ -395,3 +406,14 @@ def fetch_session_chart(symbol: str, day: dt.date | None, sessions: int = DEFAUL
         raise AlpacaError("no_data", f"A Alpaca não tem candles de {symbol} no feed IEX nesse período.")
     text = to_chart_document(symbol, bars, window)
     return text, fetched_at, session_quality(text)
+
+
+def fetch_day_chart(symbol: str, day: dt.date, now_utc: dt.datetime | None = None) -> tuple[str, dt.datetime, dict]:
+    """5-minute bars of one session -> (chart text, fetched_at, quality)."""
+    return _fetch_window(symbol, day_window(day, now_utc), now_utc)
+
+
+def fetch_session_chart(symbol: str, day: dt.date | None, sessions: int = DEFAULT_SESSIONS,
+                        now_utc: dt.datetime | None = None) -> tuple[str, dt.datetime, dict]:
+    """5-minute bars for the window -> (chart text, fetched_at, quality)."""
+    return _fetch_window(symbol, session_window(day, sessions, now_utc), now_utc)
