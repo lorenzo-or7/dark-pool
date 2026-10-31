@@ -12,9 +12,9 @@ Documentation read on 2026-10-30 and 2026-10-31:
   next_page_token"), adjustment (raw by default; here all), feed (sip, iex, ...), sort,
   page_token. Response {bars: {SYM: [{t, o, h, l, c, v, n, vw}]}, next_page_token}.
   Basic plan: real-time IEX, history since 2016, 200 historical calls per minute, and the
-  latest 15 minutes restricted. The FAQ: "For historical queries, the end parameter must be at
-  least 15 minutes old to query SIP data without a subscription"; otherwise the body says
-  "subscription does not permit querying recent SIP data" (code 42210000).
+  latest 15 minutes restricted. Per the FAQ, without a subscription SIP history can be queried
+  when `end` is at least 15 minutes old; a newer `end` is refused with a "subscription does not
+  permit ..." message (code 42210000).
 
 Feed (DP_ALPACA_FEED): "sip" by default, the consolidated tape of every US exchange, which the
 Basic plan serves for anything older than 15 minutes; this module never asks for newer data.
@@ -248,12 +248,14 @@ def available_until(now_utc: dt.datetime | None = None) -> dt.datetime:
     return _floor5((now_utc or _now()) - RECENT_GAP)
 
 
-def session_window(day: dt.date | None, sessions: int, now_utc: dt.datetime | None = None) -> Window:
-    """With a day (Time Machine): `sessions` NYSE sessions before `day`, plus `day` itself.
+def session_window(day: dt.date | None, sessions: int, now_utc: dt.datetime | None = None,
+                   min_sessions: int = MIN_SESSIONS) -> Window:
+    """With a day (Time Machine): `sessions` NYSE sessions before `day`, plus `day` itself
+    (sessions=0 with min_sessions=0: only that day, for the ORB plan of Entry and Exit).
     Without (ORB backtest): the last `sessions` sessions that have already closed for the plan.
     The data never goes past now minus 16 minutes (the Basic plan's restricted 15 minutes)."""
-    if not MIN_SESSIONS <= sessions <= MAX_SESSIONS:
-        raise AlpacaError("invalid_window", f"Histórico entre {MIN_SESSIONS} e {MAX_SESSIONS} sessões.")
+    if not min_sessions <= sessions <= MAX_SESSIONS or (day is None and sessions < 1):
+        raise AlpacaError("invalid_window", f"Histórico entre {min_sessions} e {MAX_SESSIONS} sessões.")
     limit = available_until(now_utc)
     cal = mcal._calendar()
     all_sessions = [ts.date() for ts in cal.sessions]
@@ -436,11 +438,12 @@ def entry_bar_check(text: str, day: dt.date, entry_time: str) -> str | None:
 # ---------------------------------------------------------------- one call for the jobs
 
 def fetch_session_chart(symbol: str, day: dt.date | None, sessions: int = DEFAULT_SESSIONS,
-                        now_utc: dt.datetime | None = None) -> tuple[str, dt.datetime, dict]:
+                        now_utc: dt.datetime | None = None,
+                        min_sessions: int = MIN_SESSIONS) -> tuple[str, dt.datetime, dict]:
     """5-minute bars for the window -> (chart text, fetched_at, quality). The feed is
     DP_ALPACA_FEED at call time; the caller records source(feed) on the snapshot."""
     f = feed()
-    window = session_window(day, sessions, now_utc)
+    window = session_window(day, sessions, now_utc, min_sessions)
     fetched_at = (now_utc or _now()).replace(microsecond=0)
     # `end` is inclusive: stop one second before data_end so only complete bars come back.
     req_end = window.data_end - dt.timedelta(seconds=1)
@@ -451,3 +454,9 @@ def fetch_session_chart(symbol: str, day: dt.date | None, sessions: int = DEFAUL
         raise AlpacaError("no_data", f"A Alpaca não tem candles de {symbol} no feed {f.upper()} nesse período.")
     text = to_chart_document(symbol, bars, window, f)
     return text, fetched_at, session_quality(text)
+
+
+def fetch_day_chart(symbol: str, day: dt.date, now_utc: dt.datetime | None = None) -> tuple[str, dt.datetime, dict]:
+    """Only the plan day's regular session (Entry and Exit need no history): one call, about 80
+    bars, up to the close or to now minus 16 minutes when the session is still open."""
+    return fetch_session_chart(symbol, day, 0, now_utc, min_sessions=0)

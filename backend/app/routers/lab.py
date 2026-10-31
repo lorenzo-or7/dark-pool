@@ -6,6 +6,7 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import io
+import json
 import uuid
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -20,7 +21,7 @@ from ..db import (data_snapshots, experiments, new_id, now, simulated_trades, si
 from ..engines.runner import load_module
 from ..schemas import (BacktestRequest, OrbPlanRequest, RiskCheckRequest, StrategyCreate, StrategyUpdate,
                        TimeMachineRequest)
-from ..services import alpaca
+from ..services import alpaca, day_bars
 from ..services import jobs as jobsvc
 from ..services import market_calendar as mcal
 from ..services import market_data as md
@@ -396,42 +397,110 @@ def snapshot_bars(sid: uuid.UUID, date: dt.date, user: CurrentUser = Depends(cur
 
 # ---------------------------------------------------------------- ORB plan (trader-entry + trader-exit)
 
+def _plan_snapshot(body: OrbPlanRequest, user: CurrentUser) -> dict:
+    """The snapshot the ORB plan reads: the one asked for, or the plan day's bars downloaded now
+    from the 5-minute provider and frozen (content-addressed: the same bars reuse the same row)."""
+    if body.snapshot_id is not None:
+        s, _ = _snapshot(user, body.snapshot_id)
+        if body.symbol and body.symbol != s["symbol"]:
+            raise bad_request(f"O snapshot é de {s['symbol']}, não de {body.symbol}.", "symbol_mismatch")
+        if s["interval"] != "5m":
+            raise bad_request("O plano ORB precisa de um snapshot de candles de 5 minutos.")
+        if not s["is_fixture"]:
+            policy.require_trigger_prices()
+        return s
+    policy.require_trigger_prices()
+    _new_data_allowed(None, "5m")
+    try:
+        got = day_bars.fetch(body.symbol, body.date)
+    except day_bars.DayBarsError as e:
+        status_code = 503 if e.code in PROVIDER_DOWN else 502 if e.code.startswith("provider") else 422
+        raise HTTPException(status_code, {"code": e.code, "message": e.message})
+    with tx(user.id, user.email) as conn:
+        try:
+            row = md.freeze_snapshot(conn, user.workspace_id, user.id, got.text, body.symbol, "5m", got.range,
+                                     got.source, got.fetched_at)
+        except md.DataError as e:
+            raise HTTPException(502, {"code": e.code, "message": e.message})
+        audit(conn, user, "download", "snapshot", row["id"], {"source": got.source, "purpose": "plan.orb"})
+    return dict(row)
+
+
+PROVIDER_DOWN = {"source_disabled", "missing_key", "provider_paused", "quota_exhausted", "rate_limited",
+                 "not_integrated", "needs_config"}
+
+
+def _eval_now(entry, text: str, day: dt.date) -> dt.datetime:  # noqa: ANN001
+    """The instant the plan is evaluated at: just after the close, or earlier when the data stops
+    earlier (a session still open). Otherwise a day whose bars end at 11:00 would read as
+    'expired' at 16:05 instead of 'waiting'. Naive UTC, as the engines use."""
+    close_utc = entry.eastern_to_utc(dt.datetime.combine(day, dt.time(16, 5)))
+    try:
+        data_time = (json.loads(text)["chart"]["result"][0].get("meta") or {}).get("regularMarketTime")
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+        data_time = None
+    if isinstance(data_time, (int, float)):
+        return min(close_utc, entry.utc_of(data_time))
+    return close_utc
+
+
 @router.post("/plan/orb")
 def orb_plan(body: OrbPlanRequest, user: CurrentUser = Depends(current_user)) -> dict:
-    """The day's opening-range breakout from a frozen snapshot: trader-entry finds the
-    trigger bar, trader-exit sets the stop and the target. Pure calls, no network."""
+    """The day's opening-range breakout: trader-entry finds the trigger bar, trader-exit sets the
+    stop (opening range, percent or atr:K on the session's bars up to the entry) and the target.
+    From a frozen snapshot, or from the plan day's bars downloaded now and frozen first."""
     _engine_day(body.date)
-    s, _ = _snapshot(user, body.snapshot_id)
-    if s["interval"] != "5m":
-        raise bad_request("O plano ORB precisa de um snapshot de candles de 5 minutos.")
+    s = _plan_snapshot(body, user)
     entry, exitm = load_module("entry"), load_module("exit")
     text = md.read_snapshot_text(s["sha256"], user.workspace_id)
-    close_utc = entry.eastern_to_utc(dt.datetime.combine(body.date, dt.time(16, 5)))
+    now_utc = _eval_now(entry, text, body.date)
+    snap = {"id": str(s["id"]), "sha256": s["sha256"], "source": s["source"], "range": s["range"],
+            "fetched_at": ser(s["fetched_at"]), "is_fixture": bool(s["is_fixture"]),
+            "provenance": prov.provenance_for_source(s["source"], bool(s["is_fixture"]))}
+    quality = alpaca.session_quality(text) if alpaca.is_alpaca_source(s["source"]) else None
+    base = {"snapshot": snap, "data_quality": quality,
+            "evaluated_at": entry.to_eastern(now_utc).strftime("%Y-%m-%d %H:%M ET")}
     try:
         chart = entry.parse_chart(text, s["symbol"])
-        res = entry.evaluate(chart, close_utc, setup="orb", or_minutes=body.or_minutes, interval="5m")
+        res = entry.evaluate(chart, now_utc, setup="orb", or_minutes=body.or_minutes, interval="5m")
     except entry.EntryError as e:
         raise bad_request(str(e), "entry_error")
     pub = entry.public(res)
     orr, trig = pub.get("opening_range"), pub.get("trigger")
     if pub["status"] != "triggered" or not trig or not orr:
-        return {"triggered": False, "status": pub["status"], "reason": pub.get("reason"), "opening_range": orr,
-                "engine": "trader-entry"}
+        return {**base, "triggered": False, "status": pub["status"], "reason": pub.get("reason"),
+                "opening_range": orr, "engine": "trader-entry"}
+    atr = atr_n = None
+    if body.stop_rule == "atr":
+        # trader-exit's own reader and ATR: closed, on-grid bars of the session up to the entry bar.
+        bars = exitm.session_bars(chart, body.date, "5m", trig["bar_index"], now_utc)
+        if len(bars) < 3:
+            return {**base, "triggered": True, "plan": None, "trigger": trig, "opening_range": orr,
+                    "refusal": f"O stop por ATR precisa de pelo menos 3 candles de 5 min fechados até a entrada; "
+                               f"há {len(bars)}.", "engine": "trader-entry + trader-exit"}
+        atr, atr_n = exitm.atr_of(bars)
+    param = body.atr_k if body.stop_rule == "atr" else body.stop_pct
     try:
-        plan = exitm.compute(exitm.D(str(trig["price"])), body.stop_rule, exitm.D(str(body.stop_pct)), "r",
-                             exitm.D(str(body.target_r)),
-                             or_high=orr["high"], or_low=orr["low"])
+        plan = exitm.compute(exitm.D(str(trig["price"])), body.stop_rule, exitm.D(str(param)), "r",
+                             exitm.D(str(body.target_r)), or_high=orr["high"], or_low=orr["low"],
+                             atr=atr, atr_bars=atr_n)
     except exitm.PlanError as e:
-        return {"triggered": True, "plan": None, "refusal": str(e), "trigger": trig, "opening_range": orr}
+        return {**base, "triggered": True, "plan": None, "refusal": str(e), "trigger": trig, "opening_range": orr,
+                "engine": "trader-entry + trader-exit"}
     hh, mm = (int(x) for x in str(trig["time"])[:5].split(":"))
-    return {
-        "triggered": True, "trigger": trig, "opening_range": orr, "reason": pub.get("reason"),
-        "plan": {"symbol": s["symbol"], "date": body.date.isoformat(), "entry_time": f"{hh:02d}:{mm:02d}",
-                 "entry": float(plan["entry"]), "stop": float(plan["stop"]), "target": float(plan["target"]),
-                 "risk_per_share": float(plan["risk"]), "stop_label": plan["stop_label"],
-                 "target_label": plan["target_label"]},
-        "engine": "trader-entry + trader-exit",
-    }
+    out_plan = {"symbol": s["symbol"], "date": body.date.isoformat(), "entry_time": f"{hh:02d}:{mm:02d}",
+                "entry": float(plan["entry"]), "stop": float(plan["stop"]), "target": float(plan["target"]),
+                "risk_per_share": float(plan["risk"]), "reward_risk": float(plan["reward_risk"]),
+                "stop_rule": body.stop_rule, "stop_label": plan["stop_label"], "stop_detail": plan["stop_detail"],
+                "target_label": plan["target_label"]}
+    if atr is not None:
+        out_plan.update(atr=round(atr, 4), atr_bars=atr_n, atr_k=body.atr_k)
+    notes = []
+    if body.stop_rule == "atr":
+        notes.append("O histórico do Time Machine não conhece o stop por ATR: ele reexecuta as sessões passadas com "
+                     "o mesmo stop em % da entrada.")
+    return {**base, "triggered": True, "trigger": trig, "opening_range": orr, "reason": pub.get("reason"),
+            "plan": out_plan, "notes": notes, "engine": "trader-entry + trader-exit"}
 
 
 # ---------------------------------------------------------------- simulated risk and sizing

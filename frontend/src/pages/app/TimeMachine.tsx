@@ -22,6 +22,33 @@ import { cn } from '@/lib/utils'
 const FanChart = lazy(() => import('@/components/charts/charts').then((m) => ({ default: m.FanChart })))
 const CloseHistogram = lazy(() => import('@/components/charts/charts').then((m) => ({ default: m.CloseHistogram })))
 
+type OrbPlanResponse = {
+  triggered: boolean
+  status?: string
+  reason?: string
+  refusal?: string
+  opening_range: { high: number; low: number } | null
+  plan?: {
+    entry: number
+    stop: number
+    target: number
+    entry_time: string
+    stop_label: string
+    stop_detail: string
+    atr?: number
+    atr_bars?: number
+  } | null
+  notes?: string[]
+  evaluated_at: string
+  snapshot: { id: string; sha256: string; source: string; is_fixture: boolean; provenance: { provider_name: string; feed?: string } }
+  data_quality: DataQuality | null
+}
+
+function intradayDayLabel(p: ReturnType<typeof useIntradayProvider>): string {
+  if (!p) return 'fonte do servidor'
+  return p.provider === 'alpaca' ? `Alpaca, feed ${(p.feed ?? 'sip').toUpperCase()}` : 'Yahoo'
+}
+
 type Form = {
   symbol: string
   date: string
@@ -338,7 +365,8 @@ function Simulation({ initialExp }: { initialExp: string | null }) {
     history_sessions: 60,
   }))
   const intraday = useIntradayProvider()
-  const [stopRule, setStopRule] = useState<'or_mid' | 'or_low' | 'pct'>('or_mid')
+  const [stopRule, setStopRule] = useState<'or_mid' | 'or_low' | 'atr'>('or_mid')
+  const [atrK, setAtrK] = useState(1.5)
   const [targetR, setTargetR] = useState(1)
   const [job, setJob] = useState<{ id: string; exp: string } | null>(null)
   const expId = initialExp
@@ -368,10 +396,19 @@ function Simulation({ initialExp }: { initialExp: string | null }) {
   })
   const planOrb = useMutation({
     mutationFn: () =>
-      api<{ triggered: boolean; reason?: string; refusal?: string; opening_range: { high: number; low: number } | null; plan?: { entry: number; stop: number; target: number; entry_time: string } }>('/plan/orb', {
-        body: { snapshot_id: f.snapshot_id, date: f.date, or_minutes: f.or_minutes, stop_rule: stopRule, target_r: targetR },
+      api<OrbPlanResponse>('/plan/orb', {
+        body: {
+          ...(f.snapshot_id ? { snapshot_id: f.snapshot_id } : {}),
+          symbol: f.symbol,
+          date: f.date,
+          or_minutes: f.or_minutes,
+          stop_rule: stopRule,
+          ...(stopRule === 'atr' ? { atr_k: atrK } : {}),
+          target_r: targetR,
+        },
       }),
     onSuccess: (r) => {
+      if (!f.snapshot_id) void qc.invalidateQueries({ queryKey: ['snapshots'] })
       if (r.plan) setF((x) => ({ ...x, entry: String(r.plan!.entry), stop: String(r.plan!.stop), target: String(r.plan!.target), entry_time: r.plan!.entry_time }))
     },
   })
@@ -404,6 +441,7 @@ function Simulation({ initialExp }: { initialExp: string | null }) {
     else registerFixture.mutate()
   }
 
+  const symbolOk = /^[A-Z]{1,5}(\.[A-Z])?$/.test(f.symbol)
   const e = Number(f.entry)
   const s = Number(f.stop)
   const t = Number(f.target)
@@ -495,6 +533,7 @@ function Simulation({ initialExp }: { initialExp: string | null }) {
                   <Select {...p} value={stopRule} onChange={(ev) => setStopRule(ev.target.value as typeof stopRule)}>
                     <option value="or_mid">Meio</option>
                     <option value="or_low">Mínima</option>
+                    <option value="atr">ATR</option>
                   </Select>
                 )}
               </Field>
@@ -510,16 +549,47 @@ function Simulation({ initialExp }: { initialExp: string | null }) {
                 )}
               </Field>
             </div>
-            <Button type="button" size="sm" className="mt-2 w-full" disabled={!f.snapshot_id || !f.date || planOrb.isPending} onClick={() => planOrb.mutate()}>
-              <Wand2 /> Preencher plano
+            {stopRule === 'atr' && (
+              <div className="mt-2">
+                <Field label="Multiplicador do ATR" hint="Stop = entrada − K × ATR de 14 candles da sessão até o candle de entrada (trader-exit).">
+                  {(p) => (
+                    <Select {...p} value={atrK} onChange={(ev) => setAtrK(Number(ev.target.value))}>
+                      {[1, 1.5, 2, 2.5, 3].map((n) => (
+                        <option key={n} value={n}>
+                          {n} × ATR
+                        </option>
+                      ))}
+                    </Select>
+                  )}
+                </Field>
+              </div>
+            )}
+            <Button type="button" size="sm" className="mt-2 w-full" disabled={!symbolOk || !f.date || planOrb.isPending} onClick={() => planOrb.mutate()}>
+              <Wand2 /> {planOrb.isPending ? 'Calculando…' : 'Preencher plano'}
             </Button>
-            {!f.snapshot_id && <p className="mt-1.5 text-[11px] text-faint">Escolha um snapshot e uma data.</p>}
+            {!f.snapshot_id && (
+              <p className="mt-1.5 text-[11px] text-faint">
+                {f.date ? `Sem snapshot: baixa só os candles de 5 min do dia (${intradayDayLabel(intraday)}) e congela um snapshot.` : 'Escolha uma data.'}
+              </p>
+            )}
             {planOrb.data && !planOrb.data.plan && <p className="mt-2 text-xs text-caution">{planOrb.data.refusal ?? planOrb.data.reason ?? 'A regra não disparou nesta sessão.'}</p>}
             {planOrb.data?.opening_range && planOrb.data.plan && (
               <p className="num mt-2 text-[11px] text-muted">
                 faixa {planOrb.data.opening_range.low.toFixed(2)} a {planOrb.data.opening_range.high.toFixed(2)} · gatilho às {planOrb.data.plan.entry_time}
+                {planOrb.data.plan.atr != null && ` · ATR ${planOrb.data.plan.atr.toFixed(2)} (${planOrb.data.plan.atr_bars} candles)`}
               </p>
             )}
+            {planOrb.data?.snapshot && (
+              <p className="mt-1 text-[11px] text-faint">
+                Dados: {planOrb.data.snapshot.is_fixture ? 'referência do pacote' : planOrb.data.snapshot.provenance.provider_name}
+                {planOrb.data.snapshot.provenance.feed ? ` · feed ${planOrb.data.snapshot.provenance.feed.toUpperCase()}` : ''} · snapshot {planOrb.data.snapshot.sha256.slice(0, 8)} · avaliado em {planOrb.data.evaluated_at}
+              </p>
+            )}
+            {planOrb.data?.notes?.map((n) => (
+              <p key={n} className="mt-1 text-[11px] text-faint">
+                {n}
+              </p>
+            ))}
             {planOrb.isError && <ErrorState error={planOrb.error} className="mt-2" />}
           </fieldset>
 

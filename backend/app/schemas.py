@@ -312,15 +312,29 @@ class RiskCheckRequest(Strict):
 
 
 class OrbPlanRequest(Strict):
-    snapshot_id: uuid.UUID
+    # A frozen snapshot, or a symbol: then the plan day's own bars are downloaded from the
+    # provider chosen for new 5-minute bars (DP_INTRADAY_PROVIDER) and frozen first.
+    snapshot_id: uuid.UUID | None = None
+    symbol: Symbol | None = None
     date: dt.date
     or_minutes: int = Field(default=15, ge=5, le=60)
-    stop_rule: Literal["or_mid", "or_low", "pct"] = "or_mid"
+    stop_rule: Literal["or_mid", "or_low", "pct", "atr"] = "or_mid"
     stop_pct: float = Field(default=1.0, gt=0, le=50)
+    # atr:K = K x the 14-bar ATR of the session's bars up to the entry bar (trader-exit).
+    atr_k: float = Field(default=1.5, ge=0.25, le=10)
     target_r: float = Field(default=1.0, ge=0.25, le=10)
+
+    @field_validator("symbol")
+    @classmethod
+    def check_symbol(cls, v: str | None) -> str | None:
+        return None if v is None else _sym(v)
 
     @model_validator(mode="after")
     def check_grid(self) -> OrbPlanRequest:
         if self.or_minutes % 5:
             raise ValueError("faixa de abertura em múltiplos de 5 minutos")
+        if self.snapshot_id is None and self.symbol is None:
+            raise ValueError("informe um snapshot ou um ticker")
+        if self.date > dt.date.today():
+            raise ValueError("a data não pode estar no futuro")
         return self
