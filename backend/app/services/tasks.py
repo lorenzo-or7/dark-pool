@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 
 from sqlalchemy import select, update
@@ -14,8 +14,9 @@ from sqlalchemy import select, update
 from ..config import ENGINE_VERSION, get_settings
 from ..db import (data_snapshots, experiments, now, scan_runs, simulated_trades, simulation_runs, strategies,
                   strategy_versions, tx, watchlist_assets)
-from ..engines.runner import last_error_line, run_script
-from . import alpaca
+from ..engines.runner import last_error_line, load_module, run_script
+from . import alpaca, orb_plan
+from . import market_calendar as mcal
 from . import market_data as md
 from . import providers
 from .backtest import DAILY_RULES, BacktestError, backtest_daily, backtest_orb
@@ -54,38 +55,150 @@ def scan_universe(ctx: JobContext) -> dict:
     return {"symbols": count, "report": lines[:4], "path": "universe/universe.txt", "fetched_at": now().isoformat()}
 
 
-@handler("scan.daily")
-def scan_daily(ctx: JobContext) -> dict:
-    p = ctx.params
-    scan_id = uuid.UUID(p["scan_id"])
-    args = ["daily", "--json", "--no-write", "--quiet", "--min-price", str(p["min_price"]),
-            "--min-volume", str(int(p["min_volume"])), "--show", "0"]
+CRITERIA_DAILY = {
+    "breakout_20d": "Último fechamento acima de todos os fechamentos das 20 sessões anteriores.",
+    "bull_flag": "Alta de mais de 10% nas 10 sessões antes das 5 últimas; 5 últimos fechamentos numa faixa de 5%.",
+    "reclaim_ma20": "Fechamento anterior abaixo da média de 20 dias e último fechamento acima dela.",
+    "oversold": "RSI 14 (Wilder) abaixo de 30.",
+    "oversold_bounce": "RSI 14 abaixo de 30 ontem e fechamento de hoje em alta.",
+}
+CRITERIA_ORB = {
+    "orb": "Primeiro candle de 5 min depois da faixa de abertura a FECHAR acima da máxima da faixa, até o horário "
+           "de corte. Só gráficos com todos os candles de 9:30 ao corte (uma falta é suspensão ou ausência de negócio).",
+}
+
+
+def _scan_symbols(ctx: JobContext, p: dict) -> list[str]:
+    """The symbols of a scan, in the engine's own order: the list given, or the first N of the universe
+    (read with the scanner's symbols_from_file)."""
     if p["source"] == "universe":
         u = universe_path()
         if not u.exists():
             raise JobFailure("A lista de ações ainda não foi baixada. Atualize o universo primeiro.")
-        args += ["--universe", str(u), "--limit", str(int(p["limit"]))]
-        n = int(p["limit"])
+        sc = load_module("scanner")
+        out: list[str] = []
+        for x in sc.symbols_from_file(str(u)):
+            if x not in out:
+                out.append(x)
+        return out[: int(p["limit"])]
+    if not p["symbols"]:
+        raise JobFailure("Nenhum ticker para analisar.")
+    return list(p["symbols"])
+
+
+def _orb_clock(p: dict, now_utc: datetime, data_limit: datetime | None) -> tuple[str, str]:
+    """(day, HH:MM cut) of an ORB scan, New York time. Default cut: now (live), or 15:30 for a past day;
+    never later than the data the provider serves (Alpaca SIP: now minus 16 minutes)."""
+    ny = now_utc.astimezone(mcal.NY)
+    day = p.get("day") or ny.date().isoformat()
+    if p.get("at"):
+        cut = p["at"]
+    elif day == ny.date().isoformat():
+        lim = (data_limit or now_utc).astimezone(mcal.NY)
+        m = lim.hour * 60 + lim.minute
+        cut = f"{(m - m % 5) // 60:02d}:{(m - m % 5) % 60:02d}"
     else:
-        syms = p["symbols"]
-        if not syms:
-            raise JobFailure("Nenhum ticker para analisar.")
-        args += ["--symbols", ",".join(syms)]
-        n = len(syms)
-    # The scanner reads Yahoo's spark endpoint itself, 20 symbols per request.
-    _spend(ctx, "yahoo", (n + 19) // 20)
+        cut = "15:30"
+    if data_limit is not None and day == ny.date().isoformat():
+        lim = data_limit.astimezone(mcal.NY)
+        h, mi = (int(x) for x in cut.split(":"))
+        if h * 60 + mi > lim.hour * 60 + lim.minute:
+            raise JobFailure(f"O corte {cut} ainda não está disponível: o plano gratuito da Alpaca libera os dados "
+                             f"com 15 minutos de atraso (dados até {lim:%H:%M} ET).", "not_available_yet")
+    return day, cut
+
+
+def _alpaca_bundle(ctx: JobContext, symbols: list[str], mode: str, p: dict) -> tuple[Path, dict, tuple[str, str] | None]:
+    """Alpaca bars of every symbol -> one offline bundle {SYM: v8 chart} the scanner reads."""
+    f = alpaca.feed()
+    now_utc = alpaca._now()
+    clock = None
+    if mode == "daily":
+        start, end = alpaca.daily_window(now_utc)
+        timeframe, gran, keep = alpaca.TIMEFRAME_1D, "1d", None
+        label = f"fechamentos diários de {len(symbols)} ativos"
+    else:
+        day, cut = _orb_clock(p, now_utc, alpaca.available_until(now_utc))
+        d = datetime.strptime(day, "%Y-%m-%d").date()
+        try:
+            o, c = alpaca._open_close(d)
+        except Exception:  # noqa: BLE001
+            raise JobFailure(f"A NYSE não abriu em {day}.", "market_closed")
+        h, mi = (int(x) for x in cut.split(":"))
+        cut_utc = datetime.combine(d, time(h, mi), mcal.NY).astimezone(UTC)
+        start, end = o, min(c, cut_utc) - timedelta(seconds=1)
+        o_ts, end_ts = int(o.timestamp()), int(end.timestamp())
+        timeframe, gran = alpaca.TIMEFRAME_5M, "5m"
+        keep = lambda ts: o_ts <= ts <= end_ts  # noqa: E731  (regular session up to the cut)
+        clock = (day, cut)
+        label = f"candles de 5 min de {len(symbols)} ativos em {day} até {cut} ET"
+    est = -(-len(symbols) // alpaca.SCAN_CHUNK)
+    ctx.progress(5, f"Baixando {label} (Alpaca, feed {f.upper()})")
+
+    def on_page(n: int) -> None:
+        ctx.progress(min(80, 5 + 3 * n), f"Alpaca: {n} página(s) recebida(s) ({est} lote(s) de até {alpaca.SCAN_CHUNK} ativos)")
+
+    try:
+        bars, pages = alpaca.fetch_bars_multi(symbols, timeframe, start, end, f, on_page)
+    except alpaca.AlpacaError as e:
+        raise JobFailure(e.message, e.code)
+    bundle = {s: alpaca.scanner_chart(s, rows, f, gran, keep) for s, rows in bars.items() if rows}
+    ctx.workdir.mkdir(parents=True, exist_ok=True)
+    path = ctx.workdir / "bundle.json"
+    path.write_text(json.dumps(bundle, separators=(",", ":")), encoding="utf-8")
+    meta = {"provider": alpaca.PROVIDER_ID, "feed": f, "requests": pages, "symbols_with_data": len(bundle),
+            "data_end": alpaca._rfc3339(end), "source": alpaca.source(f)}
+    return path, meta, clock
+
+
+def _run_scan(ctx: JobContext) -> dict:
+    p = ctx.params
+    mode = p.get("mode") or "daily"
+    scan_id = uuid.UUID(p["scan_id"])
+    symbols = _scan_symbols(ctx, p)
+    n = len(symbols)
     with tx(ctx.user.id, ctx.user.email) as conn:
         conn.execute(update(scan_runs).where(scan_runs.c.id == scan_id).values(status="running"))
-    ctx.progress(5, f"Buscando fechamentos diários de {n} ativos ({(n + 19) // 20} requisições)")
+    ctx.workdir.mkdir(parents=True, exist_ok=True)
+    wl = ctx.workdir / "symbols.txt"
+    wl.write_text("\n".join(symbols) + "\n", encoding="utf-8")   # a file, not a long command line
+    args = [mode, "--json", "--no-write", "--quiet", "--min-price", str(p["min_price"]),
+            "--min-volume", str(int(p["min_volume"])), "--show", "0", "--watchlist", str(wl)]
+    if mode == "orb":
+        args += ["--or-minutes", str(int(p.get("or_minutes") or 15))]
+    pid = providers.scan_provider()
+    if pid == alpaca.PROVIDER_ID:
+        bundle, meta, clock = _alpaca_bundle(ctx, symbols, mode, p)
+        args += ["--offline", str(bundle)]
+        if mode == "daily":
+            args += ["--now", alpaca._rfc3339(alpaca._now())]
+        else:
+            args += ["--now", f"{clock[0]} {clock[1]}", "--at", clock[1]]
+        source_label = f"Alpaca Market Data (feed {meta['feed'].upper()})"
+        on_line = None
+    else:
+        # The scanner reads Yahoo's spark endpoint itself, 20 symbols per request (+ stage-2 charts for orb).
+        _spend(ctx, "yahoo", (n + 19) // 20 + (min(n, 200) if mode == "orb" else 0))
+        meta = {"provider": "yahoo", "feed": None, "requests": (n + 19) // 20, "source": "yahoo"}
+        if mode == "orb":
+            day, cut = _orb_clock(p, datetime.now(UTC), None)
+            if day != datetime.now(UTC).astimezone(mcal.NY).date().isoformat():
+                raise JobFailure("Com o Yahoo a varredura ORB só lê o pregão de hoje: o histórico de 5 min gratuito é "
+                                 "curto. Configure a Alpaca para repetir dias anteriores.", "out_of_range")
+            if p.get("at"):
+                args += ["--at", cut]
+        source_label = md.SOURCE_LABEL
+        ctx.progress(5, f"Buscando dados de {n} ativos ({(n + 19) // 20} requisições ao Yahoo)")
 
-    def on_line(line: str) -> None:
-        if "spark" in line and " of " in line:
-            try:
-                k, total = (int(x) for x in line.split("spark", 1)[1].split("requests")[0].split(" of "))
-                ctx.progress(5 + int(85 * k / max(total, 1)), line.strip())
-            except ValueError:
-                pass
+        def on_line(line: str) -> None:
+            if "spark" in line and " of " in line:
+                try:
+                    k, total = (int(x) for x in line.split("spark", 1)[1].split("requests")[0].split(" of "))
+                    ctx.progress(5 + int(85 * k / max(total, 1)), line.strip())
+                except ValueError:
+                    pass
 
+    ctx.progress(85, "Aplicando as regras do trader-scanner")
     res = run_script("scanner", args, ctx.workdir, timeout_s=min(900, 60 + n), cancelled=ctx.cancelled,
                      on_line=on_line)
     if res.returncode not in (0, 1):
@@ -95,21 +208,27 @@ def scan_daily(ctx: JobContext) -> dict:
     except ValueError:
         raise JobFailure(last_error_line(res))
     result = {
-        "mode": "daily", "as_of": doc.get("as_of"), "universe": doc.get("universe"), "scanned": doc.get("scanned"),
+        "mode": mode, "as_of": doc.get("as_of"), "universe": doc.get("universe"), "scanned": doc.get("scanned"),
         "failed": doc.get("failed"), "filters": doc.get("filters"), "hits": doc.get("hits", []),
-        "source": md.SOURCE_LABEL, "note": doc.get("note"), "engine": ENGINE_VERSION,
-        "partial": bool(doc.get("failed")),
-        "criteria": {
-            "breakout_20d": "Último fechamento acima de todos os fechamentos das 20 sessões anteriores.",
-            "bull_flag": "Alta de mais de 10% nas 10 sessões antes das 5 últimas; 5 últimos fechamentos numa faixa de 5%.",
-            "reclaim_ma20": "Fechamento anterior abaixo da média de 20 dias e último fechamento acima dela.",
-            "oversold": "RSI 14 (Wilder) abaixo de 30.",
-            "oversold_bounce": "RSI 14 abaixo de 30 ontem e fechamento de hoje em alta.",
-        },
+        "source": source_label, "data": meta, "note": doc.get("note"), "engine": ENGINE_VERSION,
+        "partial": bool(doc.get("failed")) or bool(doc.get("unconfirmed")),
+        "counts": doc.get("counts"),
+        "criteria": CRITERIA_DAILY if mode == "daily" else CRITERIA_ORB,
+        **({"or_minutes": doc.get("or_minutes"), "unconfirmed": doc.get("unconfirmed")} if mode == "orb" else {}),
     }
     with tx(ctx.user.id, ctx.user.email) as conn:
         conn.execute(update(scan_runs).where(scan_runs.c.id == scan_id).values(status="succeeded", result=result))
     return {"scan_id": str(scan_id), "hits": len(result["hits"]), "scanned": result["scanned"]}
+
+
+@handler("scan.daily")
+def scan_daily(ctx: JobContext) -> dict:
+    return _run_scan(ctx)
+
+
+@handler("scan.orb")
+def scan_orb(ctx: JobContext) -> dict:
+    return _run_scan(ctx)
 
 
 def _scan_failed(ctx: JobContext, message: str, status: str) -> None:
@@ -120,6 +239,7 @@ def _scan_failed(ctx: JobContext, message: str, status: str) -> None:
 
 
 FAILURE_HOOKS["scan.daily"] = _scan_failed
+FAILURE_HOOKS["scan.orb"] = _scan_failed
 
 
 def watchlist_symbols(conn, workspace_id: uuid.UUID, watchlist_id: uuid.UUID) -> list[str]:  # noqa: ANN001
@@ -154,15 +274,16 @@ def _snapshot_for(ctx: JobContext, symbol: str, snapshot_id: str | None, rng: st
     if providers.bars_provider(interval) == alpaca.PROVIDER_ID:
         n = int(sessions or alpaca.DEFAULT_SESSIONS)
         day = datetime.strptime(plan_day, "%Y-%m-%d").date() if plan_day else None
-        ctx.progress(10, f"Baixando {n} sessões de candles de 5 min de {symbol} (Alpaca, feed IEX)")
+        ctx.progress(10, f"Baixando {n} sessões de candles de 5 min de {symbol} "
+                         f"(Alpaca, feed {alpaca.feed().upper()})")
         try:
-            text, fetched, _ = alpaca.fetch_session_chart(symbol, day, n)
+            text, fetched, quality = alpaca.fetch_session_chart(symbol, day, n)
         except alpaca.AlpacaError as e:
             raise JobFailure(e.message, e.code)
         try:
             with tx(ctx.user.id, ctx.user.email) as conn:
                 row = md.freeze_snapshot(conn, ctx.user.workspace_id, ctx.user.id, text, symbol, interval,
-                                         f"{n}sess", alpaca.SOURCE, fetched)
+                                         f"{n}sess", alpaca.source(quality["feed"]), fetched)
         except md.DataError as e:
             raise JobFailure(e.message, e.code)
         return row, text
@@ -181,18 +302,14 @@ def _snapshot_for(ctx: JobContext, symbol: str, snapshot_id: str | None, rng: st
 
 
 def _data_quality(snap: dict, text: str, before: str | None = None) -> dict | None:
-    """The IEX coverage report of an Alpaca snapshot, recomputed from the frozen text (so a
+    """The coverage report of an Alpaca snapshot, recomputed from the frozen text (so a
     reproduction shows the same report). None for other sources."""
-    if snap.get("source") != alpaca.SOURCE:
+    if not alpaca.is_alpaca_source(snap.get("source")):
         return None
     try:
         return alpaca.session_quality(text, datetime.strptime(before, "%Y-%m-%d").date() if before else None)
     except (KeyError, ValueError, TypeError):
         return None
-
-
-IEX_LIMITATION = ("Feed IEX (Alpaca, plano gratuito): uma única bolsa, não o consolidado. Volume menor que o do "
-                  "mercado; horários sem negócio na IEX não têm candle e as sessões incompletas ficam de fora.")
 
 
 def _set_experiment(ctx: JobContext, exp_id: uuid.UUID, **values: object) -> None:
@@ -233,6 +350,21 @@ def timemachine_run(ctx: JobContext) -> dict:
     snap, text = _snapshot_for(ctx, p["symbol"], p.get("snapshot_id"), "60d", "5m", plan_day=p["date"],
                                sessions=p.get("history_sessions"))
     _set_experiment(ctx, exp_id, data_snapshot_id=snap["id"])
+    if p.get("plan_rule"):
+        # The plan kept on the server: trader-entry + trader-exit on the plan day inside this same
+        # snapshot. The prices stay in the results (to reproduce the run); the API decides what to show.
+        rule = p["plan_rule"]
+        ctx.progress(20, "Calculando o plano ORB no servidor (trader-entry + trader-exit)")
+        try:
+            got = orb_plan.compute(text, p["symbol"], datetime.strptime(p["date"], "%Y-%m-%d").date(),
+                                   int(rule["or_minutes"]), rule["stop_rule"], float(rule["stop_pct"]),
+                                   float(rule["atr_k"]), float(rule["target_r"]))
+        except orb_plan.PlanRefusal as e:
+            raise JobFailure(str(e), "entry_error")
+        if not got.get("plan"):
+            raise JobFailure(got.get("refusal") or f"A regra ORB não disparou em {p['date']}: {got.get('reason')}.",
+                             "plan_not_triggered")
+        p = {**p, **{k: got["plan"][k] for k in ("entry", "stop", "target", "entry_time")}}
     quality = _data_quality(snap, text, p["date"])
     if quality is not None:
         # Clear reasons before the engine runs; the engine itself is unchanged and checks again.
@@ -241,7 +373,7 @@ def timemachine_run(ctx: JobContext) -> dict:
             raise JobFailure(why, "entry_bar_missing")
         if quality["pool_sessions"] < alpaca.MIN_SESSIONS:
             raise JobFailure(
-                f"Só {quality['pool_sessions']} sessões completas (78 candles) antes de {p['date']} no feed IEX; "
+                f"Só {quality['pool_sessions']} sessões completas (78 candles) antes de {p['date']} no feed {quality['feed'].upper()}; "
                 f"o Time Machine precisa de {alpaca.MIN_SESSIONS}. {len(quality['incomplete_sessions'])} sessões "
                 "encerradas tiveram lacunas e ficaram de fora. Peça mais sessões de histórico.", "not_enough_sessions")
     ctx.workdir.mkdir(parents=True, exist_ok=True)
@@ -278,7 +410,7 @@ def timemachine_run(ctx: JobContext) -> dict:
             "Os candles de 5 min são sorteados um a um, sem dependência entre eles: tendência e mudanças de volatilidade do dia não são modeladas.",
             "Gap através do stop conta como -1R; um candle que toca stop e alvo conta como stop. Sem custos nem slippage.",
             "Eventos ausentes da janela (resultados, notícias, suspensões) não aparecem nas simulações.",
-            *([IEX_LIMITATION] if quality is not None else []),
+            *([alpaca.limitation(snap.get("source"))] if quality is not None else []),
         ],
     }
     with tx(ctx.user.id, ctx.user.email) as conn:
@@ -336,7 +468,7 @@ def backtest_run(ctx: JobContext) -> dict:
         quality = _data_quality(snap, text)
         if quality is not None:
             out["data_quality"] = quality
-            out["assumptions"] = [*out["assumptions"], IEX_LIMITATION]
+            out["assumptions"] = [*out["assumptions"], alpaca.limitation(snap.get("source"))]
     elif rule in DAILY_RULES:
         snap, text = _snapshot_for(ctx, symbol, p.get("snapshot_id"), p.get("range", "2y"), "1d")
         ctx.progress(50, "Calculando sinais sem informação futura")

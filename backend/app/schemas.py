@@ -8,7 +8,7 @@ import re
 import uuid
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
 from .services.market_data import SYMBOL_RE
 
@@ -149,13 +149,31 @@ class BacktestRequest(Strict):
 
 # ---------------------------------------------------------------- time machine
 
+class PlanRule(Strict):
+    """The ORB plan as a rule: the server finds entry, stop and target on the plan day's own bars
+    (trader-entry + trader-exit), so the visitor never has to see or send provider prices."""
+    or_minutes: int = Field(default=15, ge=5, le=60)
+    stop_rule: Literal["or_mid", "or_low", "pct", "atr"] = "or_mid"
+    stop_pct: float = Field(default=1.0, gt=0, le=50)
+    atr_k: float = Field(default=1.5, ge=0.25, le=10)
+    target_r: float = Field(default=1.0, ge=0.25, le=10)
+
+    @model_validator(mode="after")
+    def check_grid(self) -> PlanRule:
+        if self.or_minutes % 5:
+            raise ValueError("faixa de abertura em múltiplos de 5 minutos")
+        return self
+
+
 class TimeMachineRequest(Strict):
     symbol: Symbol
     date: dt.date
-    entry: float = Field(gt=0, lt=1e6)
-    stop: float = Field(gt=0, lt=1e6)
-    target: float = Field(gt=0, lt=1e6)
-    entry_time: str
+    # Either the plan in prices (entry, stop, target, entry_time) or plan_rule (computed on the server).
+    entry: float | None = Field(default=None, gt=0, lt=1e6)
+    stop: float | None = Field(default=None, gt=0, lt=1e6)
+    target: float | None = Field(default=None, gt=0, lt=1e6)
+    entry_time: str | None = None
+    plan_rule: PlanRule | None = None
     replays: int = Field(default=10000, ge=100, le=50000)
     seed: int = Field(default=19, ge=0, le=2**31 - 1)
     window: int = Field(default=2, ge=0, le=10)
@@ -188,8 +206,16 @@ class TimeMachineRequest(Strict):
 
     @model_validator(mode="after")
     def check_plan(self) -> TimeMachineRequest:
-        if not self.stop < self.entry < self.target:
-            raise ValueError("compra: o stop deve ficar abaixo da entrada e o alvo acima")
+        prices = (self.entry, self.stop, self.target, self.entry_time)
+        if self.plan_rule is not None:
+            if any(x is not None for x in prices):
+                raise ValueError("envie o plano em preços ou a regra (plan_rule), não os dois")
+            self.or_minutes = self.plan_rule.or_minutes
+        else:
+            if any(x is None for x in prices):
+                raise ValueError("informe entrada, stop, alvo e horário, ou a regra do plano (plan_rule)")
+            if not self.stop < self.entry < self.target:
+                raise ValueError("compra: o stop deve ficar abaixo da entrada e o alvo acima")
         if self.or_minutes % 5:
             raise ValueError("faixa de abertura em múltiplos de 5 minutos")
         if self.date > dt.date.today():
@@ -200,12 +226,18 @@ class TimeMachineRequest(Strict):
 # ---------------------------------------------------------------- scanner
 
 class ScanRequest(Strict):
+    mode: Literal["daily", "orb"] = "daily"
     source: Literal["symbols", "watchlist", "universe"] = "symbols"
     symbols: list[Symbol] = Field(default_factory=list, max_length=300)
     watchlist_id: uuid.UUID | None = None
     limit: int = Field(default=200, ge=1, le=6000)
     min_price: float = Field(default=5, ge=0, le=100000)
     min_volume: int = Field(default=1_000_000, ge=0, le=10**10)
+    # orb only: the opening range, the session (default: today) and the clock cut (HH:MM New York;
+    # default: now, or 15:30 for a past day; never later than the data the provider can serve).
+    or_minutes: int = Field(default=15, ge=5, le=120)
+    day: dt.date | None = None
+    at: str | None = None
 
     @field_validator("symbols")
     @classmethod
@@ -216,6 +248,28 @@ class ScanRequest(Strict):
             if s not in out:
                 out.append(s)
         return out
+
+    @field_validator("at")
+    @classmethod
+    def check_at(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if not HHMM.match(v):
+            raise ValueError("use HH:MM (horário de Nova York)")
+        h, m = map(int, v.split(":"))
+        if (h * 60 + m) % 5 or not 9 * 60 + 35 <= h * 60 + m <= 16 * 60:
+            raise ValueError("horário na grade de 5 minutos entre 09:35 e 16:00")
+        return v
+
+    @model_validator(mode="after")
+    def check_mode(self) -> ScanRequest:
+        if self.or_minutes % 5:
+            raise ValueError("faixa de abertura em múltiplos de 5 minutos")
+        if self.mode == "daily" and (self.day or self.at):
+            raise ValueError("dia e horário valem só para a varredura ORB")
+        if self.day and self.day > dt.date.today():
+            raise ValueError("a data não pode estar no futuro")
+        return self
 
 
 # ---------------------------------------------------------------- watchlists / journal / settings
@@ -312,15 +366,75 @@ class RiskCheckRequest(Strict):
 
 
 class OrbPlanRequest(Strict):
-    snapshot_id: uuid.UUID
+    # A frozen snapshot, or a symbol: then the plan day's own bars are downloaded from the
+    # provider chosen for new 5-minute bars (DP_INTRADAY_PROVIDER) and frozen first.
+    snapshot_id: uuid.UUID | None = None
+    symbol: Symbol | None = None
     date: dt.date
     or_minutes: int = Field(default=15, ge=5, le=60)
-    stop_rule: Literal["or_mid", "or_low", "pct"] = "or_mid"
+    stop_rule: Literal["or_mid", "or_low", "pct", "atr"] = "or_mid"
     stop_pct: float = Field(default=1.0, gt=0, le=50)
+    # atr:K = K x the 14-bar ATR of the session's bars up to the entry bar (trader-exit).
+    atr_k: float = Field(default=1.5, ge=0.25, le=10)
     target_r: float = Field(default=1.0, ge=0.25, le=10)
+
+    @field_validator("symbol")
+    @classmethod
+    def check_symbol(cls, v: str | None) -> str | None:
+        return None if v is None else _sym(v)
 
     @model_validator(mode="after")
     def check_grid(self) -> OrbPlanRequest:
         if self.or_minutes % 5:
             raise ValueError("faixa de abertura em múltiplos de 5 minutos")
+        if self.snapshot_id is None and self.symbol is None:
+            raise ValueError("informe um snapshot ou um ticker")
+        if self.date > dt.date.today():
+            raise ValueError("a data não pode estar no futuro")
         return self
+
+
+# ---------------------------------------------------------------- alerts (trader-alerts, Bloco 5)
+
+class AlertRule(Strict):
+    """One trader-alerts rule (the engine's own format; it validates again)."""
+    id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.:\-]{1,40}$")
+    type: Literal["above", "below", "stop", "target", "pct_move", "opening_bell", "time"]
+    symbol: Symbol | None = None
+    price: float | None = Field(default=None, gt=0, lt=1e6)
+    pct: float | None = Field(default=None, gt=0, le=100)
+    direction: Literal["up", "down"] | None = None
+    ref: float | None = Field(default=None, gt=0, lt=1e6)
+    at: str | None = None
+    label: str | None = Field(default=None, max_length=60)
+    before_close: bool | None = None
+    date: dt.date | None = None
+    rearm: bool | None = None
+    note: str | None = Field(default=None, max_length=120)
+
+    @field_validator("symbol")
+    @classmethod
+    def check_symbol(cls, v: str | None) -> str | None:
+        return None if v is None else _sym(v)
+
+    @field_validator("at")
+    @classmethod
+    def check_at(cls, v: str | None) -> str | None:
+        if v is not None and not HHMM.match(v):
+            raise ValueError("use HH:MM (horário de Nova York)")
+        return v
+
+    @field_serializer("date")
+    def ser_date(self, v: dt.date | None) -> str | None:
+        return v.isoformat() if v else None
+
+
+class AlertState(Strict):
+    """What already rang (rule id -> UTC stamp), kept by the visitor's browser."""
+    rung: dict[str, str] = Field(default_factory=dict, max_length=200)
+    last_check: str | None = Field(default=None, max_length=24)
+
+
+class AlertCheckRequest(Strict):
+    rules: list[AlertRule] = Field(min_length=1, max_length=50)
+    state: AlertState = Field(default_factory=AlertState)

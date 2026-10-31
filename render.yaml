@@ -37,6 +37,14 @@ services:
         sync: false
       - key: DP_INTRADAY_PROVIDER
         value: auto
+      - key: DP_ALPACA_FEED
+        value: sip
+      - key: DP_QUOTE_PROVIDER
+        value: auto
+      - key: DP_ALPACA_QUOTE_FEED
+        value: delayed_sip
+      - key: DP_SCAN_PROVIDER
+        value: auto
       - key: DP_TRUSTED_PROXY_HOPS
         value: "1"
       - key: DP_JOB_WORKERS

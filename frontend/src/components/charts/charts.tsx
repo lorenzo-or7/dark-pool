@@ -116,6 +116,17 @@ export function RHistogram({ data, height = 200 }: { data: { from: number; to: n
   )
 }
 
+/** Values in dollars, or in R (public lab: 0R at the entry, -1R at the stop). */
+export type ValueUnit = 'price' | 'R'
+
+function unitFmt(unit: ValueUnit) {
+  return {
+    tick: (v: number) => (unit === 'R' ? `${v.toFixed(1)}R` : v.toFixed(0)),
+    exact: (v: number) => (unit === 'R' ? `${v >= 0 ? '+' : ''}${v.toFixed(2)}R` : v.toFixed(2)),
+    value: (v: number) => (unit === 'R' ? fmt.r(v, 2) : fmt.price(v)),
+  }
+}
+
 /** Monte Carlo fan: 5–95 % and 25–75 % bands of the replay paths, median, stop and target. */
 export function FanChart({
   bands,
@@ -125,6 +136,7 @@ export function FanChart({
   target,
   height = 300,
   paths,
+  unit = 'price',
 }: {
   bands: number[][]
   times: string[]
@@ -133,7 +145,9 @@ export function FanChart({
   target: number
   height?: number
   paths?: number[][]
+  unit?: ValueUnit
 }) {
+  const u = unitFmt(unit)
   const data = bands.map((b, i) => ({
     t: times[i],
     outer: [b[0], b[4]],
@@ -149,7 +163,7 @@ export function FanChart({
       <ComposedChart data={data} margin={{ top: 10, right: 78, bottom: 4, left: -4 }}>
         {GRID}
         <XAxis dataKey="t" {...AXIS} minTickGap={36} />
-        <YAxis {...AXIS} width={60} domain={[lo - pad, hi + pad]} tickFormatter={(v: number) => v.toFixed(0)} />
+        <YAxis {...AXIS} width={60} domain={[lo - pad, hi + pad]} tickFormatter={u.tick} />
         <Tooltip
           cursor={{ stroke: '#1f4a5c' }}
           content={(p: TipProps) => (
@@ -161,9 +175,9 @@ export function FanChart({
                 return (
                   <div className="num space-y-0.5">
                     <p className="text-muted">{String(d.t)} ET</p>
-                    <p className="text-fg">Mediana {fmt.price(Number(d.median))}</p>
-                    <p className="text-muted">50 % entre {o && n ? `${n[0].toFixed(2)} e ${n[1].toFixed(2)}` : '—'}</p>
-                    <p className="text-muted">90 % entre {o ? `${o[0].toFixed(2)} e ${o[1].toFixed(2)}` : '—'}</p>
+                    <p className="text-fg">Mediana {u.value(Number(d.median))}</p>
+                    <p className="text-muted">50 % entre {o && n ? `${u.exact(n[0])} e ${u.exact(n[1])}` : '—'}</p>
+                    <p className="text-muted">90 % entre {o ? `${u.exact(o[0])} e ${u.exact(o[1])}` : '—'}</p>
                   </div>
                 )
               }}
@@ -176,16 +190,27 @@ export function FanChart({
           <Line key={k} dataKey={`p${k}`} stroke="#8799a3" strokeOpacity={0.18} strokeWidth={1} dot={false} activeDot={false} isAnimationActive={false} />
         ))}
         <Line dataKey="median" stroke="#e6e8ea" strokeWidth={1.5} dot={false} activeDot={{ r: 3, fill: '#e6e8ea', stroke: '#001621' }} isAnimationActive={false} />
-        <ReferenceLine y={target} stroke="#3ecf8e" strokeDasharray="4 4" label={{ value: `alvo ${target.toFixed(2)}`, position: 'right', fill: '#3ecf8e', fontSize: 10 }} />
+        <ReferenceLine y={target} stroke="#3ecf8e" strokeDasharray="4 4" label={{ value: `alvo ${u.exact(target)}`, position: 'right', fill: '#3ecf8e', fontSize: 10 }} />
         <ReferenceLine y={entry} stroke="#ff4103" strokeOpacity={0.7} label={{ value: `entrada`, position: 'right', fill: '#ff6a36', fontSize: 10 }} />
-        <ReferenceLine y={stop} stroke="#f2545b" strokeDasharray="4 4" label={{ value: `stop ${stop.toFixed(2)}`, position: 'right', fill: '#f2545b', fontSize: 10 }} />
+        <ReferenceLine y={stop} stroke="#f2545b" strokeDasharray="4 4" label={{ value: `stop ${u.exact(stop)}`, position: 'right', fill: '#f2545b', fontSize: 10 }} />
       </ComposedChart>
     </ResponsiveContainer>
   )
 }
 
 /** Histogram of the simulated price at the end of the session. */
-export function CloseHistogram({ hist, entry, height = 200 }: { hist: { lo: number; hi: number; bins: number[] }; entry: number; height?: number }) {
+export function CloseHistogram({
+  hist,
+  entry,
+  height = 200,
+  unit = 'price',
+}: {
+  hist: { lo: number; hi: number; bins: number[] }
+  entry: number
+  height?: number
+  unit?: ValueUnit
+}) {
+  const u = unitFmt(unit)
   const w = (hist.hi - hist.lo) / hist.bins.length
   const total = hist.bins.reduce((a, b) => a + b, 0)
   const data = hist.bins.map((c, i) => ({ x: hist.lo + w * (i + 0.5), from: hist.lo + w * i, to: hist.lo + w * (i + 1), c, share: c / total }))
@@ -193,7 +218,7 @@ export function CloseHistogram({ hist, entry, height = 200 }: { hist: { lo: numb
     <ResponsiveContainer width="100%" height={height}>
       <BarChart data={data} margin={{ top: 8, right: 8, bottom: 4, left: -16 }} barCategoryGap={1}>
         {GRID}
-        <XAxis dataKey="x" {...AXIS} tickFormatter={(v: number) => v.toFixed(0)} minTickGap={24} />
+        <XAxis dataKey="x" {...AXIS} tickFormatter={u.tick} minTickGap={24} />
         <YAxis {...AXIS} width={40} tickFormatter={(v: number) => fmt.compact(v)} />
         <Tooltip
           cursor={{ fill: 'rgba(255,255,255,0.03)' }}
@@ -202,7 +227,7 @@ export function CloseHistogram({ hist, entry, height = 200 }: { hist: { lo: numb
               {...p}
               render={(d) => (
                 <p className="num text-fg">
-                  {Number(d.from).toFixed(2)} a {Number(d.to).toFixed(2)}: {fmt.int(Number(d.c))} replays ({fmt.pct(Number(d.share))})
+                  {u.exact(Number(d.from))} a {u.exact(Number(d.to))}: {fmt.int(Number(d.c))} replays ({fmt.pct(Number(d.share))})
                 </p>
               )}
             />
@@ -284,6 +309,30 @@ export function PeriodArea({ data, height = 220 }: { data: { month: string; sum_
         <Bar yAxisId="n" dataKey="trades" fill="#1f4a5c" radius={[2, 2, 0, 0]} isAnimationActive={false} />
         <Area yAxisId="r" dataKey="sum_r" type="monotone" stroke="#7fb6d1" fill="url(#pa-fill)" strokeWidth={1.5} isAnimationActive={false} />
       </ComposedChart>
+    </ResponsiveContainer>
+  )
+}
+
+/** Cumulative return in % of the first close: the public lab's chart, with no price level. */
+export function ReturnChart({ time, values, intraday, height = 300 }: { time: number[]; values: (number | null)[]; intraday: boolean; height?: number }) {
+  const data = time.map((t, i) => ({ t, v: values[i] }))
+  const label = (t: number) =>
+    new Date(t * 1000).toLocaleString('pt-BR', intraday ? { timeZone: 'America/New_York', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' } : { day: '2-digit', month: '2-digit', year: '2-digit' })
+  const last = [...values].reverse().find((v) => v != null) ?? 0
+  const color = last >= 0 ? '#3ecf8e' : '#f2545b'
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <AreaChart data={data} margin={{ top: 10, right: 8, bottom: 4, left: -8 }}>
+        {GRID}
+        <XAxis dataKey="t" {...AXIS} tickFormatter={label} minTickGap={48} />
+        <YAxis {...AXIS} width={52} tickFormatter={(v: number) => `${v.toFixed(0)}%`} />
+        <ReferenceLine y={0} stroke="#8799a3" strokeOpacity={0.5} />
+        <Tooltip
+          cursor={{ stroke: '#1f4a5c' }}
+          content={(p: TipProps) => <Tip {...p} render={(d) => <p className="num text-fg">{label(Number(d.t))} · {fmt.signedPct(Number(d.v))}</p>} />}
+        />
+        <Area dataKey="v" stroke={color} fill={color} fillOpacity={0.12} strokeWidth={1.5} dot={false} isAnimationActive={false} connectNulls />
+      </AreaChart>
     </ResponsiveContainer>
   )
 }

@@ -23,7 +23,7 @@ HIDDEN_MESSAGE = ("Preços e candles brutos não são exibidos neste laboratóri
 # Price-level and volume fields of a scanner hit or a quote (derived metrics such as RSI,
 # percent change and volatility stay).
 QUOTE_HIDDEN_FIELDS = ("last", "volume", "avg_volume")
-HIT_HIDDEN_FIELDS = ("price", "volume")
+HIT_HIDDEN_FIELDS = ("price", "volume", "or_high", "or_low")
 
 
 def summary() -> dict:

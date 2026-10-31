@@ -130,9 +130,15 @@ export type MonteCarlo = {
   p_stop: number
   p_neither: number
   p_green: number
-  median_close: number
-  p5_close: number
-  p95_close: number
+  /** in dollars; absent when the public lab hides provider prices (then the *_r fields) */
+  median_close?: number
+  p5_close?: number
+  p95_close?: number
+  median_close_r?: number
+  p5_close_r?: number
+  p95_close_r?: number
+  /** "R" when bands, sample paths and the histogram are in R */
+  unit?: 'R'
   avg_R: number
   r_at_target: number
   bands: number[][]
@@ -240,7 +246,7 @@ export type Quote = {
   prices_hidden?: boolean
 }
 
-/** One NYSE session in an Alpaca (IEX) snapshot, counted against what the session has. */
+/** One NYSE session in an Alpaca snapshot, counted against what the session has. */
 export type QualitySession = {
   date: string
   state: 'closed' | 'in_progress' | 'not_started'
@@ -277,4 +283,10 @@ export type DataQuality = {
 }
 
 /** GET /api/workspace -> intraday_provider: who supplies new 5-minute bars (set on the server). */
-export type IntradayProvider = { setting: 'auto' | 'alpaca' | 'yahoo'; provider: 'alpaca' | 'yahoo'; daily_provider: 'yahoo' }
+export type IntradayProvider = {
+  setting: 'auto' | 'alpaca' | 'yahoo'
+  provider: 'alpaca' | 'yahoo'
+  /** Alpaca feed (DP_ALPACA_FEED); null when the provider is Yahoo */
+  feed?: 'sip' | 'iex' | null
+  daily_provider: 'yahoo'
+}

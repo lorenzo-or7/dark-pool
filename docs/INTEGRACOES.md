@@ -3,9 +3,10 @@
 Registro de cada fonte de dados integrada ao DARK POOL. Uma seção por integração, preenchida
 quando o bloco correspondente é entregue.
 
-Estado (30/10/2026): Blocos 1 (calendário) e 2 (política, cotas e proveniência) estão no GitHub,
-commit `9affb62`. Bloco 3 (Alpaca + Time Machine) implementado e testado com fixtures; teste real
-com chaves pendente, sem commit.
+Estado (31/10/2026): Blocos 1 (calendário) e 2 (política, cotas e proveniência) no GitHub
+(`9affb62`); Bloco 3 (Alpaca + Time Machine) no GitHub (`695bccd`). Na branch `bloco4-entry-exit`:
+feed SIP como padrão da Alpaca e Bloco 4 (plano ORB com as barras do dia e stop por ATR). Os Blocos
+3 e 4 foram testados só com fixtures; o teste real com chaves continua pendente.
 
 Decisões de base (relatório de provedores, 30/10/2026):
 - Fase gratuita: preços e barras são insumo interno do servidor; o público vê sinais, métricas e
@@ -103,22 +104,23 @@ gratuito); um reinício zera os contadores.
 
 ---
 
-## Alpaca Market Data, plano Basic, feed IEX (Bloco 3)
+## Alpaca Market Data, plano Basic, feed SIP ou IEX (Bloco 3)
 
 Categoria B: o usuário cria a conta e as chaves. Sem chaves, o provedor fica `missing_key` e nada muda.
 
 | Item | Valor |
 |---|---|
-| Documentação usada (30/10/2026) | https://docs.alpaca.markets/reference/stockbars, https://docs.alpaca.markets/us/reference/stockbarsingle-1, https://docs.alpaca.markets/us/docs/about-market-data-api.md |
+| Documentação usada (30 e 31/10/2026) | https://docs.alpaca.markets/reference/stockbars, https://docs.alpaca.markets/us/reference/stockbarsingle-1, https://docs.alpaca.markets/us/docs/about-market-data-api.md, https://docs.alpaca.markets/us/docs/market-data-faq |
 | Endpoint | `GET https://data.alpaca.markets/v2/stocks/bars`, cabeçalhos `APCA-API-KEY-ID` e `APCA-API-SECRET-KEY` |
-| Parâmetros enviados | `symbols`, `timeframe=5Min`, `start`, `end` (ambos inclusivos), `limit=10000`, `adjustment=all`, `feed=iex`, `sort=asc`, `page_token` |
+| Parâmetros enviados | `symbols`, `timeframe=5Min`, `start`, `end` (ambos inclusivos), `limit=10000`, `adjustment=all`, `feed=sip` (ou `iex`), `sort=asc`, `page_token` |
+| Feed | `DP_ALPACA_FEED` = `sip` (padrão) ou `iex`. Segundo a FAQ da Alpaca, sem assinatura o SIP histórico pode ser consultado quando o `end` tem pelo menos 15 minutos. O adaptador nunca pede dados com menos de 16 min, então o plano gratuito serve o SIP (consolidado de todas as bolsas). No exemplo da própria FAQ (AAPL, 29/09/2023), o volume diário IEX foi 923.134 contra 51.861.083 no SIP (~1,8%). |
 | Código | `backend/app/services/alpaca.py`; escolha do provedor em `providers.bars_provider()`; jobs em `services/tasks.py` |
-| Uso | Candles de 5 min de execuções novas do Time Machine e dos backtests ORB. Candles diários continuam no Yahoo. |
+| Uso | Candles de 5 min de execuções novas do Time Machine, dos backtests ORB e do plano ORB (Bloco 4). Candles diários continuam no Yahoo. |
 | Escolha | `DP_INTRADAY_PROVIDER` = `auto` (padrão: Alpaca quando há as duas chaves), `alpaca` ou `yahoo` |
 | Janela | `history_sessions` (20 a 250, padrão 60) sessões da NYSE. Time Machine: N sessões antes do dia do plano + o próprio dia. Backtest ORB: as últimas N sessões já encerradas. Ignorado com snapshot ou com Yahoo. |
-| Persistência | Snapshot `source = "alpaca:iex"`, `range = "<N>sess"`, arquivo no bucket privado como os demais |
+| Persistência | Snapshot `source = "alpaca:sip"` ou `"alpaca:iex"`, `range = "<N>sess"`, arquivo no bucket privado como os demais. Snapshots `alpaca:iex` antigos continuam reproduzíveis com o próprio rótulo. |
 | Frequência | Sob demanda, uma coleta por execução sem snapshot. Sem execução periódica. |
-| Falhas | 401/403 `provider_auth`; 429 `rate_limited` (pausa 120 s); 400/422 `provider_bad_request` com o texto curto da Alpaca; outros `provider_error`; rede `provider_unreachable`/`provider_timeout`. A tarefa falha com o motivo. Não há troca para o Yahoo. |
+| Falhas | recusa de assinatura (corpo com `subscription` ou código 42210000, em 403 ou 422) `provider_subscription`, sem acionar o circuit breaker; 401/403 `provider_auth`; 429 `rate_limited` (pausa 120 s); 400/422 `provider_bad_request` com o texto curto da Alpaca; outros `provider_error`; rede `provider_unreachable`/`provider_timeout`. A tarefa falha com o motivo. Não há troca para o Yahoo. |
 | Segredos | Só nos cabeçalhos. Mensagens de erro passam por `scrub()`, que remove chave e secret. `scripts/check_alpaca.py` não imprime nenhum trecho das chaves. |
 
 ### Conversão para o formato dos motores
@@ -139,24 +141,25 @@ motores já leem; nenhum motor foi editado.
 
 O hash é o SHA-256 do texto JSON canônico (chaves ordenadas, separadores fixos, ASCII). Participam:
 as barras guardadas (timestamp, open, high, low, close, volume), `meta.symbol`, `dataGranularity`,
-`exchangeTimezoneName`, `currency`, `regularMarketTime` (= `data_end`), `dataProvider`, `feed`,
+`exchangeTimezoneName`, `currency`, `regularMarketTime` (= `data_end`), `dataProvider`, `feed`
+(SIP e IEX geram hashes diferentes),
 `adjustment`, `window` (dia do plano, lista de sessões, início, `data_end`, sessões pedidas) e
 `leftOut`. Não participam: o horário da coleta (fica na coluna `fetched_at`), a ordem em que as
 barras chegaram, os campos `n` e `vw` da Alpaca, o relatório de qualidade (recalculado do texto) e a
 proveniência (derivada de `source`). Assim, duas coletas da mesma janela com os mesmos dados geram
 o mesmo snapshot. Com `adjustment=all`, um desdobramento ou dividendo posterior muda os preços
-antigos e, portanto, o hash. O teste `test_golden_hash_is_stable` fixa o hash de uma entrada fixa.
+antigos e, portanto, o hash. O teste `test_golden_hash_is_stable` fixa o hash de uma entrada fixa (um para IEX, um para SIP).
 
-### Qualidade do IEX (`results.data_quality`)
+### Qualidade dos dados (`results.data_quality`)
 
-IEX é uma bolsa, não o consolidado: volume menor e horários sem negócio sem candle. Nada é
-preenchido. Por sessão: `closed` (encerrada até `data_end`; menos candles que o esperado = lacuna),
+Horário sem nenhum negócio no feed não tem candle: raro no SIP para ações listadas, comum no IEX
+(uma bolsa só). Nada é preenchido. Por sessão: `closed` (encerrada até `data_end`; menos candles que o esperado = lacuna),
 `in_progress` (o `data_end` cai dentro dela; o esperado são só os horários já encerrados, e ela não
 conta como incompleta) ou `not_started`. Esperado: 78 candles, ou 42 num fechamento às 13h.
 `pool_sessions` = sessões encerradas com 78 candles antes do dia do plano, as que o motor usa.
 
 Antes de chamar o motor, o Time Machine recusa com motivo claro: candle de entrada ausente
-(`entry_bar_missing`, distinguindo lacuna do IEX de sessão ainda em andamento) e menos de 20 sessões
+(`entry_bar_missing`, distinguindo lacuna do feed de sessão ainda em andamento) e menos de 20 sessões
 completas (`not_enough_sessions`). O motor continua checando por conta própria.
 
 ### Consumo de cota
@@ -170,16 +173,135 @@ não chama a Alpaca.
 Todos com a fixture DERIVADA de `tests/alpaca_fixtures.py` (barras do arquivo TSLA da skill
 reescritas no formato da Alpaca; não coletadas) e uma camada HTTP falsa. Cobrem: janela por sessões
 (feriado, fechamento antecipado, dia em andamento, antes da abertura, limites 20–250), JSON
-determinístico e hash fixo, timestamps preservados e `regularMarketTime = data_end`, mesmo resultado
+determinístico e hashes fixos (IEX e SIP), timestamps preservados e `regularMarketTime = data_end`, mesmo resultado
 do Time Machine (seed 19) que o arquivo original, paginação, cota, erros 400/401/403/429/500 e de
 rede sem chaves nas mensagens, lacunas contadas e não preenchidas, candle de entrada ausente,
-histórico curto, ponta a ponta na API (snapshot `alpaca:iex`, proveniência, `data_quality`,
-reprodução sem nova coleta), backtest ORB, escolha por configuração e ausência de troca silenciosa.
+histórico curto, ponta a ponta na API (snapshot `alpaca:sip`, proveniência, `data_quality`,
+reprodução sem nova coleta), backtest ORB, escolha por configuração e ausência de troca silenciosa,
+`DP_ALPACA_FEED=iex` de ponta a ponta (e reprodução de um snapshot IEX com o padrão já em SIP),
+recusa de assinatura sem culpar as chaves.
 O teste real (`test_live_alpaca_smoke`) só roda com `DP_LIVE_ALPACA=1` e chaves em `backend/.env`.
 
 ### Pendente
 
-- Teste real com chaves no Windows do usuário: `scripts/check_alpaca.py` e `DP_LIVE_ALPACA=1`.
-  Confirma o que a documentação não diz explicitamente: que `t` é o início da barra (9:30 → 13:30Z
-  no horário de verão).
+- Teste real com chaves no Windows do usuário: `scripts/check_alpaca.py` (testa SIP e IEX e mostra
+  o volume de cada um) e `DP_LIVE_ALPACA=1`. Confirma o que a documentação não diz explicitamente:
+  que `t` é o início da barra (9:30 → 13:30Z no horário de verão), e que o SIP com mais de 15 min
+  responde sem assinatura. Se o SIP for recusado, `DP_ALPACA_FEED=iex` volta ao comportamento anterior.
 - Confirmação por escrito da Alpaca sobre uso do plano Basic num site público (só cálculo no servidor).
+
+---
+
+## Plano ORB: trader-entry + trader-exit com as barras do dia (Bloco 4)
+
+`POST /api/plan/orb` aceita um snapshot (como antes) ou só `symbol` + `date`. Sem snapshot, baixa
+apenas o pregão regular do dia do plano pelo provedor de 5 min (`DP_INTRADAY_PROVIDER`, o mesmo do
+Time Machine), congela um snapshot e só então chama os motores. Nenhum motor foi editado.
+
+| Item | Valor |
+|---|---|
+| Código | `backend/app/services/day_bars.py`; `alpaca.fetch_day_chart()`; rota em `routers/lab.py` |
+| Alpaca | Uma chamada, janela de uma sessão (`range = "1sess"`), mesmo conversor, hash e `data_quality` do Bloco 3 |
+| Yahoo | O menor período que contém o dia: `1d` (hoje), `5d` (até 6 dias), `60d` (até 58 dias); mais antigo → 422 `out_of_range` |
+| Snapshot | Endereçado por conteúdo: o mesmo dia já encerrado reaproveita a mesma linha. Auditoria `download`/`snapshot` com `purpose = plan.orb` |
+| Stops | `or_mid`, `or_low`, `pct` e, novo, `atr` com `atr_k` (0,25 a 10, padrão 1,5): K × ATR de 14 candles da sessão até o candle de entrada, pelo leitor e pelo `atr_of` do próprio trader-exit. Com menos de 3 candles fechados até a entrada (só com lacunas no feed), recusa com motivo |
+| Avaliação | No menor entre 16:05 ET e o `regularMarketTime` dos dados. Antes, uma sessão em andamento cujos dados acabam às 10:00 era lida às 16:05 e aparecia como "expired"; agora aparece como "waiting" |
+| Resposta | Plano, faixa, gatilho, `stop_detail`, `reward_risk`, ATR, `snapshot` (com proveniência e feed), `data_quality` (Alpaca), `evaluated_at` e notas |
+| Política | Com `DP_SHOW_TRIGGER_PRICES` desligado (padrão do `public`) e dados que não sejam a referência do pacote, o plano volta em R e % (ver "Exibição em R"), com `plan_rule` para rodar o Time Machine no servidor |
+| Falhas | Provedor desligado/sem chave/pausado → 503; erro da Alpaca → 502 com o código; janela inválida, sem dados ou dia ainda não liberado → 422. Sem troca para o Yahoo |
+
+Limite conhecido: o histórico do Time Machine (`history_replay`) não conhece stop por ATR. Com um
+plano ATR, ele reexecuta as sessões passadas com o mesmo stop em % da entrada (regra `pct` do
+próprio motor), e a resposta do plano avisa isso.
+
+Consumo de cota: 1 chamada da Alpaca por plano sem snapshot (cerca de 80 a 190 barras, uma página).
+
+Testes (`backend/tests/test_plan_orb.py`, fixtures): números de referência da skill (or-mid 358,32 /
+370,04; atr:1.5 359,35 / 373,84 com ATR 3,2182 sobre 9 candles), download só do dia (uma chamada,
+`start` na abertura e `end` = `data_end` − 1 s), snapshot reaproveitado, recálculo pelo snapshot sem
+nova coleta, sessão em andamento como "waiting", recusa do ATR com menos de 3 candles, erros sem
+chaves, validação, Yahoo com o período mais curto e a política do modo público.
+
+---
+
+## Exibição em R no modo público (aprovada em 31/10/2026)
+
+Com `DP_SHOW_TRIGGER_PRICES` desligado (padrão do `public`), nada que venha de preços de um provedor
+sai da API em dólares. O banco guarda os números completos (para reproduzir); a conversão é feita na
+saída por `backend/app/services/price_view.py`. Execuções sobre a referência do pacote (arquivo TSLA
+da skill, MIT) continuam em dólares.
+
+| Onde | O que muda |
+|---|---|
+| `POST /api/plan/orb` | Plano em R e % da entrada (0R, −1R, +xR; `stop_pct`, `target_pct`, `risk_pct`, `atr_pct`), faixa de abertura em % da entrada, gatilho sem preço nem volume, `plan_rule` |
+| `POST /api/timemachine` | Aceita `plan_rule` no lugar de entrada/stop/alvo: o job calcula o plano (trader-entry + trader-exit) no dia do plano dentro do mesmo snapshot. Sem disparo → falha `plan_not_triggered` com o motivo |
+| `GET /api/experiments/{id}` e export JSON/CSV | Plano em R; Monte Carlo (mediana, p5, p95, faixas, caminhos, histograma) em R (`mc.unit = "R"`); trades sem preços (só R, datas, resultado); avisos do motor que citam preços são omitidos; CSV sem colunas de preço |
+| `GET /api/experiments`, `GET /api/jobs/{id}` | `params` sem entrada/stop/alvo |
+| `GET /api/assets/{s}/relative` (novo) | Para o Scanner: retorno acumulado em %, RSI 14, distância da MM20 em %, ATR 14 e histograma do MACD em % do preço. Sem OHLC nem volume |
+| Frontend | Time Machine: "Plano calculado e guardado no servidor", leque e histograma em R, tabela sem colunas de preço, dimensionamento oculto. Scanner: gráfico de retorno % no lugar dos candles quando `DP_SHOW_RAW_PRICES` está desligado. Dashboard: o minigráfico já saía no Bloco 2 |
+
+Testes: `backend/tests/test_price_view.py` e `test_plan_orb.py` (fluxo público completo: plano →
+Time Machine pela regra → experimento, trades, job, lista e exports sem nenhum preço do provedor;
+mesma simulação pela regra e pelos preços digitados).
+
+---
+
+## Alertas: trader-alerts sob demanda, cotações de vários símbolos (Bloco 5)
+
+`POST /api/alerts/check` recebe as regras do visitante (formato do próprio trader-alerts: `above`,
+`below`, `stop`, `target`, `pct_move`, `opening_bell`, `time`; até 50) e o estado do que já disparou.
+As regras e o estado ficam no navegador (`localStorage`). O servidor busca as cotações, chama o
+`evaluate` do motor (puro, sem edição) e devolve o que disparou e o novo estado. Nada roda sozinho e
+nada é enviado para fora (sem e-mail, push ou webhook). A dica de `trader-broker` que o motor inclui
+nas mensagens é removida: o laboratório não tem corretora.
+
+| Item | Valor |
+|---|---|
+| Código | `routers/alerts.py`, `services/quotes.py`, `alpaca.fetch_snapshots()`; schema `AlertCheckRequest` |
+| Alpaca | `GET https://data.alpaca.markets/v2/stocks/snapshots?symbols=A,B,...&feed=...` (https://docs.alpaca.markets/reference/stocksnapshots-1): uma requisição para até 100 símbolos. Usa `latestTrade.p` (ou `dailyBar.c`), `dailyBar` e `prevDailyBar.c`. A página de referência não mostra o corpo; o parser aceita o exemplo da v2 (chaves por símbolo no topo) e um envelope `snapshots`. O teste real confirma qual (o `check_alpaca.py` informa o formato) |
+| Feed | `DP_ALPACA_QUOTE_FEED` = `delayed_sip` (padrão: consolidado com 15 min de atraso, na lista de feeds da referência) ou `iex` (tempo real, uma bolsa) |
+| Provedor | `DP_QUOTE_PROVIDER` = `auto` (Alpaca com chaves, senão Yahoo), `alpaca` ou `yahoo`. Sem troca automática |
+| Yahoo | Uma requisição por símbolo pela cota de `market_data.fetch_chart_raw` (`1d`/`5m`), lida pelo `parse_yahoo` do próprio motor. Sujeito a `DP_ALLOW_UNOFFICIAL_SOURCES` |
+| Stooq | Não é usado (o endpoint respondia 404 quando a skill foi escrita e não é uma API documentada). O motor continua com o código, sem edição |
+| Política | Com `DP_SHOW_RAW_PRICES` desligado, as mensagens trocam os preços por `[preço oculto]` e as cotações saem só com a variação %. A comparação usa os preços no servidor |
+| Falhas | Provedor desligado/sem chave/pausado/429 → 503; outros erros da Alpaca → 502 com o código (`provider_subscription` se o feed não for coberto); símbolo sem cotação → item em `errors`, os outros seguem |
+| Frontend | Painel "Alertas" no Dashboard: adicionar (acima de, abaixo de, variação %), sino de abertura, "Verificar agora". Sem verificação automática |
+
+Consumo de cota: 1 chamada da Alpaca por verificação (até 100 símbolos); no Yahoo, 1 por símbolo.
+
+Testes (`backend/tests/test_alerts_api.py`, fixtures; `frontend/src/components/app/AlertsPanel.test.tsx`):
+uma requisição para todos os símbolos e feed padrão, envelope e feed IEX, símbolo sem cotação, regras
+de outro dia sem download, nada dispara duas vezes com o estado devolvido, erros 403 de assinatura,
+401, 429 e 500 sem chaves, caminho Yahoo idêntico ao motor lendo os mesmos arquivos salvos da skill,
+validação (campos extras, preço negativo, horário inválido, mais de 50 regras), política do modo
+público e o painel guardando as regras no navegador e verificando só quando pedido.
+
+---
+
+## Scanner diário e ORB com barras da Alpaca (Bloco 6)
+
+O trader-scanner aceita um pacote offline `{TICKER: gráfico v8}`. Com a Alpaca, o servidor baixa as
+barras de todos os ativos (vários por requisição), monta esse pacote e chama o motor com `--offline`
+e `--now`/`--at`. O motor não foi editado; as regras (setups diários, faixa de abertura, "todos os
+candles até o corte") são as dele.
+
+| Item | Valor |
+|---|---|
+| Código | `alpaca.fetch_bars_multi()`, `alpaca.scanner_chart()`, `alpaca.daily_window()`; job `_run_scan` em `services/tasks.py` (`scan.daily` e `scan.orb`) |
+| Requisição | `GET /v2/stocks/bars` com até 200 símbolos por série de páginas (`limit=10000` conta barras de todos), `feed=sip` (ou `DP_ALPACA_FEED`), `adjustment=all` |
+| Diária | `timeframe=1Day`, 70 sessões até agora − 16 min. `meta.regularMarketPrice/regularMarketVolume` = fechamento e volume da última barra (o que o filtro de liquidez do motor lê; com SIP o volume é o consolidado). Uma sessão em andamento chega como barra parcial e o próprio motor a descarta até o fechamento |
+| ORB | `timeframe=5Min` do pregão escolhido (padrão: hoje) da abertura até o corte. Corte padrão: agora (no máximo agora − 16 min, arredondado à grade de 5 min) ou 15:30 para um dia passado; um corte ainda não liberado falha com `not_available_yet`. O motor confere "todos os candles de 9:30 ao corte" |
+| Yahoo | `DP_SCAN_PROVIDER=yahoo` (ou sem chaves): o motor lê o spark do Yahoo sozinho, como antes; ORB só do pregão de hoje |
+| Política | Com `DP_SHOW_RAW_PRICES` desligado: `price`, `volume`, `or_high` e `or_low` saem nulos; ficam padrão, horário do gatilho, % acima da faixa e RSI |
+| Frontend | Scanner: "Diária (pré-abertura)" ou "ORB (5 min)" com faixa, pregão e corte; colunas do ORB (gatilho, % acima da faixa, fechamento, faixa) |
+
+Consumo de cota: diária ≈ 1 chamada a cada 140 ativos (70 barras); ORB ≈ 1 chamada a cada 125
+ativos com o corte no fim do dia (menos de manhã). Universo de 6.000 ativos: ~45 a 50 chamadas,
+abaixo do limite de 150/min configurado.
+
+Testes (`backend/tests/test_scanner_alpaca.py`, fixtures DERIVADAS de `tests/scanner_fixtures.py`;
+o oráculo é o motor lendo os arquivos ORIGINAIS da skill): diária com os mesmos padrões e preços que
+o motor no spark original (19 ativos); paginação e lotes; filtro de liquidez pelo volume da última
+barra; ORB de 19/10 às 10:15 com as mesmas 42 rupturas do motor no `wall5m` original (TSLA 364,18 às
+10:15, faixa até 362,18), em 2 lotes; corte ao vivo limitado ao atraso do plano gratuito; Yahoo só
+hoje; validação; política do modo público.

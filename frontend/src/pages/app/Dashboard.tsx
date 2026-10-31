@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ArrowUpRight, FlaskConical, Play, Radar } from 'lucide-react'
 import { lazy, Suspense, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { AlertsPanel } from '@/components/app/AlertsPanel'
 import { KpiTile, Sparkline } from '@/components/app/KpiTile'
 import { PageHeader } from '@/components/app/AppShell'
 import { Badge, DataBadge, StatusBadge } from '@/components/ui/badge'
@@ -307,6 +308,8 @@ export default function Dashboard() {
           )}
         </section>
       </div>
+
+      <AlertsPanel />
 
       {/* recent experiments */}
       <section className="panel mt-4 p-4 sm:p-5" aria-labelledby="re-h">

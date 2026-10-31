@@ -51,7 +51,7 @@ type Ws = {
   shared?: boolean
   data_sources: DataSource[]
   display_policy?: DisplayPolicy
-  intraday_provider?: { setting: string; provider: string; daily_provider: string }
+  intraday_provider?: { setting: string; provider: string; feed?: string | null; daily_provider: string }
   version: { app: string; engine: string; mode: string; database: string }
 }
 
@@ -203,7 +203,9 @@ export default function Settings() {
         </ul>
         {ws.data?.intraday_provider && (
           <p className="mt-2 text-xs text-muted">
-            Candles de 5 min (Time Machine e backtests ORB): {ws.data.intraday_provider.provider === 'alpaca' ? 'Alpaca, feed IEX' : 'Yahoo'}
+            Candles de 5 min (Time Machine, backtests ORB e plano ORB): {ws.data.intraday_provider.provider === 'alpaca'
+              ? `Alpaca, feed ${ws.data.intraday_provider.feed === 'iex' ? 'IEX (uma bolsa)' : 'SIP (consolidado, mais de 15 min)'}`
+              : 'Yahoo'}
             {ws.data.intraday_provider.setting === 'auto' ? ' (automático)' : ' (fixado no servidor)'}. Candles diários: Yahoo. Sem troca automática de fonte em caso de falha.
           </p>
         )}

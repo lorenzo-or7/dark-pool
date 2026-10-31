@@ -79,13 +79,24 @@ class Settings(BaseSettings):
     # SEC asks for "Name email" in the User-Agent. Needed by News (8-K) and Analyst.
     sec_user_agent: str = ""
 
-    # Alpaca Market Data (Basic plan, IEX feed). Server only, never sent to the browser.
+    # Alpaca Market Data (Basic plan). Server only, never sent to the browser.
     alpaca_api_key_id: str = ""
     alpaca_api_secret_key: str = ""
     # Who supplies the 5-minute bars of new Time Machine runs and ORB backtests:
     # "auto" = Alpaca when both keys are set, Yahoo otherwise; "alpaca" or "yahoo" = always that one.
     # Never a silent switch: if the chosen provider fails, the run fails. Daily bars stay on Yahoo.
     dp_intraday_provider: Literal["auto", "alpaca", "yahoo"] = "auto"
+    # Alpaca feed: "sip" = consolidated tape of all US exchanges (the Basic plan serves it for data
+    # older than 15 minutes, which is all this lab asks for); "iex" = one exchange, ~2% of volume.
+    dp_alpaca_feed: Literal["sip", "iex"] = "sip"
+    # Quotes for the alerts (Bloco 5): "delayed_sip" = consolidated, 15 minutes late (free plan);
+    # "iex" = real time, one exchange only.
+    dp_alpaca_quote_feed: Literal["delayed_sip", "iex"] = "delayed_sip"
+    # Who supplies the alerts' quotes: auto (Alpaca with keys, else Yahoo), alpaca or yahoo. No fallback.
+    dp_quote_provider: Literal["auto", "alpaca", "yahoo"] = "auto"
+    # Who supplies the scanner's bars (Bloco 6): auto (Alpaca SIP with keys, else Yahoo spark read by
+    # the engine itself), alpaca or yahoo. Daily backtests stay on Yahoo. No fallback.
+    dp_scan_provider: Literal["auto", "alpaca", "yahoo"] = "auto"
 
     # Display policy (see services/policy.py). Empty = the default for the mode: everything
     # visible in the local demo, restrictive in the public lab. Applied by the API, not the UI.
@@ -105,6 +116,21 @@ class Settings(BaseSettings):
     @field_validator("dp_intraday_provider", mode="before")
     @classmethod
     def _blank_is_auto(cls, v: object) -> object:
+        return "auto" if isinstance(v, str) and not v.strip() else (v.strip().lower() if isinstance(v, str) else v)
+
+    @field_validator("dp_alpaca_feed", mode="before")
+    @classmethod
+    def _blank_is_sip(cls, v: object) -> object:
+        return "sip" if isinstance(v, str) and not v.strip() else (v.strip().lower() if isinstance(v, str) else v)
+
+    @field_validator("dp_alpaca_quote_feed", mode="before")
+    @classmethod
+    def _blank_is_delayed_sip(cls, v: object) -> object:
+        return "delayed_sip" if isinstance(v, str) and not v.strip() else (v.strip().lower() if isinstance(v, str) else v)
+
+    @field_validator("dp_quote_provider", "dp_scan_provider", mode="before")
+    @classmethod
+    def _blank_quote_provider(cls, v: object) -> object:
         return "auto" if isinstance(v, str) and not v.strip() else (v.strip().lower() if isinstance(v, str) else v)
 
     @field_validator("dp_show_raw_prices", "dp_show_trigger_prices", "dp_allow_unofficial_sources",

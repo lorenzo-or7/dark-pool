@@ -27,7 +27,7 @@ from ..services import policy
 from ..services import providers as prov
 from ..services import market_data as md
 from ..services.tasks import universe_path, watchlist_symbols
-from .common import audit, bad_request, not_found, rows, ser
+from .common import audit, bad_request, calendar_refusal, not_found, rows, ser
 
 router = APIRouter(prefix="/api", dependencies=[Depends(current_user)])
 
@@ -134,6 +134,46 @@ def asset_chart(symbol: str, range: Literal["1d", "5d", "1mo", "3mo", "6mo", "1y
                   "day_high": meta.get("regularMarketDayHigh"), "day_low": meta.get("regularMarketDayLow"),
                   "volume": meta.get("regularMarketVolume"), "52w_high": meta.get("fiftyTwoWeekHigh"),
                   "52w_low": meta.get("fiftyTwoWeekLow")},
+        "provenance": md.provenance(chart, fetched, cached, interval),
+        "warnings": ([] if len(chart.bars) >= 20 else ["Poucos candles: indicadores incompletos."]),
+    }
+
+
+@router.get("/assets/{symbol}/relative")
+def asset_relative(symbol: str, range: Literal["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y"] = "6mo"):  # noqa: A002
+    """The same series as /chart without a price level, for the public lab (display policy):
+    cumulative return in %, RSI 14, distance to the 20-period average in %, ATR 14 in % of the
+    close and the MACD histogram in % of the close. No OHLC, no volume."""
+    interval = "5m" if range in ("1d", "5d") else "1wk" if range == "5y" else "1d"
+    try:
+        text, fetched, cached = md.fetch_chart_raw(symbol, range, interval)
+        chart = md.parse_chart(text, md.clean_symbol(symbol))
+    except md.DataError as e:
+        return _err(e)
+    closes = [b["close"] for b in chart.bars]
+    highs, lows = [b["high"] for b in chart.bars], [b["low"] for b in chart.bars]
+    sma20, atr14 = ind.sma(closes, 20), ind.atr(highs, lows, closes, 14)
+    _, _, macd_h = ind.macd(closes)
+    base = closes[0] if closes else None
+
+    def pct_of(x: float | None, c: float) -> float | None:
+        return None if x is None or not c else round(100.0 * x / c, 3)
+
+    meta = chart.meta
+    prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+    last = closes[-1] if closes else None
+    return {
+        "symbol": chart.symbol, "name": meta.get("longName") or meta.get("shortName"), "range": range,
+        "interval": interval, "time": [b["time"] for b in chart.bars],
+        "series": {
+            "return_pct": [round(100.0 * (c / base - 1), 3) if base else None for c in closes],
+            "rsi14": [ind.r4(x) for x in ind.rsi(closes, 14)],
+            "dist_sma20_pct": [None if m is None else round(100.0 * (c / m - 1), 3) for c, m in zip(closes, sma20)],
+            "atr14_pct": [pct_of(a, c) for a, c in zip(atr14, closes)],
+            "macd_hist_pct": [pct_of(h, c) for h, c in zip(macd_h, closes)],
+        },
+        "quote": {"change_pct": round((last / prev - 1) * 100, 3) if last and prev else None},
+        "prices_hidden": True,
         "provenance": md.provenance(chart, fetched, cached, interval),
         "warnings": ([] if len(chart.bars) >= 20 else ["Poucos candles: indicadores incompletos."]),
     }
@@ -265,8 +305,14 @@ def create_scan(body: ScanRequest, user: CurrentUser = Depends(current_user)) ->
         params["source"] = "symbols"
     elif body.source == "symbols" and not body.symbols:
         raise bad_request("Informe ao menos um ticker.")
+    if body.mode == "orb" and body.day is not None:
+        try:
+            mcal.require_engine_session(body.day)
+        except mcal.CalendarError as e:
+            raise calendar_refusal(e.code, e.message)
     try:
-        prov.check_allowed("yahoo")  # the daily scan reads Yahoo's spark endpoint
+        # DP_SCAN_PROVIDER: Alpaca bars downloaded by the server, or Yahoo's spark read by the engine itself.
+        prov.check_allowed(prov.scan_provider())
     except prov.ProviderUnavailable as e:
         raise HTTPException(ERROR_STATUS[e.code], {"code": e.code, "message": e.message})
     scan_id = new_id()
@@ -274,12 +320,12 @@ def create_scan(body: ScanRequest, user: CurrentUser = Depends(current_user)) ->
     dedupe = {k: v for k, v in params.items() if k != "scan_id"}
 
     def created(conn, job_id):  # noqa: ANN001, ANN202
-        conn.execute(scan_runs.insert().values(id=scan_id, workspace_id=user.workspace_id, mode="daily",
+        conn.execute(scan_runs.insert().values(id=scan_id, workspace_id=user.workspace_id, mode=body.mode,
                                                params=dedupe, status="queued", job_id=job_id, created_by=user.id,
                                                created_at=now()))
         audit(conn, user, "create", "scan", scan_id)
 
-    job, was_created = jobsvc.submit(user, "scan.daily", params, on_created=created, dedupe_params=dedupe)
+    job, was_created = jobsvc.submit(user, f"scan.{body.mode}", params, on_created=created, dedupe_params=dedupe)
     return {"job": ser(job), "created": was_created, "scan_id": job["params"]["scan_id"]}
 
 

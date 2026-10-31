@@ -73,22 +73,23 @@ PROVIDERS: dict[str, Provider] = {p.id: p for p in (
     Provider("exchange_calendars", "Calendário NYSE (exchange_calendars)", "Pregões, feriados e fechamentos antecipados",
              "library", "Calculado no servidor", "https://github.com/gerrymanoim/exchange_calendars",
              None, per_minute=None, per_day=None, published_limit="sem rede"),
-    Provider("alpaca", "Alpaca Market Data (Basic, IEX)",
-             "Candles de 5 min para cálculo interno: Time Machine e backtests ORB",
-             "commercial", "Feed IEX (uma bolsa, não o consolidado); 15 min de atraso no plano gratuito",
+    Provider("alpaca", "Alpaca Market Data (Basic)",
+             "Candles de 5 min (Time Machine, backtests ORB, plano ORB) e cotações dos alertas, só para cálculo interno",
+             "commercial", "Feed SIP (consolidado) com mais de 15 min no plano gratuito; IEX opcional",
              "https://alpaca.markets/disclosures",
              None, per_minute=150, per_day=None, published_limit="200 chamadas/min no histórico",
              needs_key=True),
 )}
 
 # Sources recorded on snapshots -> provider id.
-SOURCE_PROVIDER = {"yahoo": "yahoo", "fixture:day-trader-skill/TSLA-60d5m": "yahoo", "alpaca:iex": "alpaca"}
+SOURCE_PROVIDER = {"yahoo": "yahoo", "fixture:day-trader-skill/TSLA-60d5m": "yahoo", "alpaca:iex": "alpaca",
+                   "alpaca:sip": "alpaca", "alpaca:delayed_sip": "alpaca"}
 
 
 def bars_provider(interval: str) -> str:
     """Which provider supplies NEW bars of this interval (DP_INTRADAY_PROVIDER). Only the
-    5-minute bars can come from Alpaca; daily and weekly bars stay on Yahoo (IEX volume is not
-    the consolidated volume the daily filters expect). No fallback: the caller checks the
+    5-minute bars can come from Alpaca for now; daily and weekly bars stay on Yahoo until the
+    daily rules are moved and compared (Bloco 6). No fallback: the caller checks the
     returned provider and fails if it is unavailable."""
     if interval != "5m":
         return "yahoo"
@@ -99,9 +100,27 @@ def bars_provider(interval: str) -> str:
     return choice
 
 
+def scan_provider() -> str:
+    """Who supplies the scanner's bars (DP_SCAN_PROVIDER). No fallback."""
+    s = get_settings()
+    if s.dp_scan_provider == "auto":
+        return "alpaca" if (s.alpaca_api_key_id and s.alpaca_api_secret_key) else "yahoo"
+    return s.dp_scan_provider
+
+
+def quote_provider() -> str:
+    """Who supplies the alerts' quotes (DP_QUOTE_PROVIDER). No fallback."""
+    s = get_settings()
+    if s.dp_quote_provider == "auto":
+        return "alpaca" if (s.alpaca_api_key_id and s.alpaca_api_secret_key) else "yahoo"
+    return s.dp_quote_provider
+
+
 def intraday_summary() -> dict:
     s = get_settings()
-    return {"setting": s.dp_intraday_provider, "provider": bars_provider("5m"), "daily_provider": "yahoo"}
+    pid = bars_provider("5m")
+    return {"setting": s.dp_intraday_provider, "provider": pid,
+            "feed": s.dp_alpaca_feed if pid == "alpaca" else None, "daily_provider": "yahoo"}
 
 
 # ---------------------------------------------------------------- quota and circuit breaker

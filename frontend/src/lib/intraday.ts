@@ -15,6 +15,6 @@ export function useIntradayProvider(): IntradayProvider | null {
 export function intradayLabel(p: IntradayProvider | null, sessions: number): string {
   if (!p) return 'Baixar agora'
   return p.provider === 'alpaca'
-    ? `Baixar agora da Alpaca (feed IEX, ${sessions} sessões, 5 min)`
+    ? `Baixar agora da Alpaca (feed ${(p.feed ?? 'sip').toUpperCase()}, ${sessions} sessões, 5 min)`
     : 'Baixar agora do Yahoo (60 dias, 5 min)'
 }

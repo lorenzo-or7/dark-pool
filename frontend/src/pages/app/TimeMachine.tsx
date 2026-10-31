@@ -22,6 +22,47 @@ import { cn } from '@/lib/utils'
 const FanChart = lazy(() => import('@/components/charts/charts').then((m) => ({ default: m.FanChart })))
 const CloseHistogram = lazy(() => import('@/components/charts/charts').then((m) => ({ default: m.CloseHistogram })))
 
+type PlanRule = { or_minutes: number; stop_rule: string; stop_pct: number; atr_k: number; target_r: number }
+
+type OrbPlanResponse = {
+  triggered: boolean
+  status?: string
+  reason?: string
+  refusal?: string
+  /** public lab: provider prices hidden; the plan comes in R and percent, plus the rule to run it on the server */
+  prices_hidden?: boolean
+  display_note?: string
+  plan_rule: PlanRule
+  opening_range: { high?: number; low?: number; high_pct?: number; low_pct?: number } | null
+  plan?: {
+    entry?: number
+    stop?: number
+    target?: number
+    entry_time: string
+    stop_label: string
+    stop_detail?: string
+    target_r: number
+    stop_pct?: number
+    target_pct?: number
+    atr?: number
+    atr_pct?: number
+    atr_bars?: number
+  } | null
+  notes?: string[]
+  evaluated_at: string
+  snapshot: { id: string; sha256: string; source: string; is_fixture: boolean; provenance: { provider_name: string; feed?: string } }
+  data_quality: DataQuality | null
+}
+
+function pctLabel(v: number | undefined): string {
+  return v == null ? '—' : `${v >= 0 ? '+' : '−'}${fmt.num(Math.abs(v), 2)} %`
+}
+
+function intradayDayLabel(p: ReturnType<typeof useIntradayProvider>): string {
+  if (!p) return 'fonte do servidor'
+  return p.provider === 'alpaca' ? `Alpaca, feed ${(p.feed ?? 'sip').toUpperCase()}` : 'Yahoo'
+}
+
 type Form = {
   symbol: string
   date: string
@@ -39,7 +80,22 @@ type Form = {
 }
 
 type TMResults = {
-  plan: { symbol: string; date: string; entry: number; stop: number; target: number; entry_time: string; risk_per_share: number; target_r: number; stop_rule: string }
+  plan: {
+    symbol: string
+    date: string
+    entry_time: string
+    target_r: number
+    stop_rule: string
+    entry: number
+    stop: number
+    target: number
+    risk_per_share: number
+    /** public lab: prices hidden, plan in R and percent of the entry */
+    stop_pct?: number
+    target_pct?: number
+  }
+  prices_hidden?: boolean
+  display_note?: string
   mc: MonteCarlo & { sample_paths?: number[][] }
   history: { sessions: number; triggered: number; target: number; stop: number; close: number; green: number; avg_R: number | null; rule?: { or_minutes: number; stop_rule: string; target_r: number } }
   verdict: string
@@ -76,7 +132,9 @@ function Results({ exp }: { exp: Experiment }) {
     mutationFn: () => api<{ job: Job; experiment_id: string }>('/timemachine', { body: { ...exp.params, snapshot_id: r.snapshot.id } }),
     onSuccess: (x) => setRerun({ job: x.job.id, exp: x.experiment_id }),
   })
+  const hidden = !!r.prices_hidden
   const sizing = useQuery({
+    enabled: !hidden,
     queryKey: ['risk', 'tm', exp.id],
     queryFn: ({ signal }) =>
       api<{ sizing: { qty: number; max_loss: number; bound_by: string } | null; refusal?: string; note: string }>('/risk/check', {
@@ -93,8 +151,9 @@ function Results({ exp }: { exp: Experiment }) {
   const ci = wilson(h.target, histDecided)
   const breakEven = 1 / (1 + (m.r_at_target ?? 1))
   const trades = exp.trades ?? []
+  const canRepeat = exp.params.entry != null || exp.params.plan_rule != null
 
-  const cols: Column<Trade>[] = [
+  const allCols: Column<Trade>[] = [
     { key: 'd', header: 'Sessão', sort: (t) => t.entry_date, cell: (t) => <span className="num">{shortDate(t.entry_date)}</span>, width: 110 },
     { key: 't', header: 'Entrada', cell: (t) => <span className="num text-muted">{t.entry_time}</span>, width: 100 },
     { key: 'e', header: 'Preço', align: 'right', sort: (t) => t.entry, cell: (t) => <span className="num">{fmt.num(t.entry)}</span> },
@@ -108,6 +167,8 @@ function Results({ exp }: { exp: Experiment }) {
     },
     { key: 'r', header: 'R', align: 'right', sort: (t) => t.r_multiple, cell: (t) => <span className={cn('num', t.r_multiple > 0 ? 'text-up' : t.r_multiple < 0 ? 'text-down' : '')}>{fmt.r(t.r_multiple, 2)}</span> },
   ]
+  const cols = hidden ? allCols.filter((c) => !['e', 's', 'g'].includes(c.key)) : allCols
+  const pctTxt = (v: number | undefined) => (v == null ? '—' : `${v >= 0 ? '+' : '−'}${fmt.num(Math.abs(v), 2)} %`)
 
   const odds = [
     { l: 'Alvo primeiro', v: m.p_target, c: 'bg-up' },
@@ -121,14 +182,21 @@ function Results({ exp }: { exp: Experiment }) {
       <section className="panel p-4 sm:p-5" aria-labelledby="res-h">
         <div className="flex flex-wrap items-center gap-2">
           <h2 id="res-h" className="text-lg font-medium text-fg">
-            {r.plan.symbol} · {shortDate(r.plan.date)} · entrada {String(exp.params.entry_time)} ET
+            {r.plan.symbol} · {shortDate(r.plan.date)} · entrada {String(exp.params.entry_time ?? r.plan.entry_time)} ET
           </h2>
           <DataBadge kind="simulated" />
           {r.snapshot.is_fixture && <DataBadge kind="fixture" />}
         </div>
-        <p className="num mt-1 text-xs text-muted">
-          entrada {fmt.num(r.plan.entry)} · stop {fmt.num(r.plan.stop)} · alvo {fmt.num(r.plan.target)} ({r.plan.target_r}R, risco {fmt.num(r.plan.risk_per_share)} por ação) · {fmt.int(m.replays)} replays · seed {m.seed}
-        </p>
+        {hidden ? (
+          <p className="num mt-1 text-xs text-muted">
+            entrada 0R · stop −1R ({pctTxt(r.plan.stop_pct)}) · alvo {fmt.r(r.plan.target_r, 2)} ({pctTxt(r.plan.target_pct)}) · {fmt.int(m.replays)} replays · seed {m.seed}
+          </p>
+        ) : (
+          <p className="num mt-1 text-xs text-muted">
+            entrada {fmt.num(r.plan.entry)} · stop {fmt.num(r.plan.stop)} · alvo {fmt.num(r.plan.target)} ({r.plan.target_r}R, risco {fmt.num(r.plan.risk_per_share)} por ação) · {fmt.int(m.replays)} replays · seed {m.seed}
+          </p>
+        )}
+        {r.display_note && <p className="mt-1 text-[11px] text-faint">{r.display_note}</p>}
 
         <div className="mt-5 grid grid-cols-2 gap-2 lg:grid-cols-4">
           {odds.map((o) => (
@@ -144,13 +212,13 @@ function Results({ exp }: { exp: Experiment }) {
 
         <div className="mt-4 grid gap-3 sm:grid-cols-3">
           <div>
-            <p className="text-xs text-muted">Preço às {m.until}, mediana</p>
-            <p className="num text-lg text-fg">{fmt.price(m.median_close)}</p>
+            <p className="text-xs text-muted">{hidden ? 'Resultado' : 'Preço'} às {m.until}, mediana</p>
+            <p className="num text-lg text-fg">{hidden ? fmt.r(m.median_close_r, 2) : fmt.price(m.median_close)}</p>
           </div>
           <div>
             <p className="text-xs text-muted">90 % dos replays entre</p>
             <p className="num text-lg text-fg">
-              {fmt.num(m.p5_close)} e {fmt.num(m.p95_close)}
+              {hidden ? `${fmt.r(m.p5_close_r, 2)} e ${fmt.r(m.p95_close_r, 2)}` : `${fmt.num(m.p5_close)} e ${fmt.num(m.p95_close)}`}
             </p>
           </div>
           <div>
@@ -184,16 +252,20 @@ function Results({ exp }: { exp: Experiment }) {
             Faixas de 50 % e 90 % de {fmt.int(m.band_paths)} caminhos, mediana em branco e {Math.min(24, m.sample_paths?.length ?? 0)} caminhos de exemplo. Horário de Nova York.
           </p>
           <Suspense fallback={<Skeleton className="h-[320px]" />}>
-            <FanChart bands={m.bands} times={m.band_times} entry={r.plan.entry} stop={r.plan.stop} target={r.plan.target} paths={m.sample_paths} height={320} />
+            {hidden ? (
+              <FanChart bands={m.bands} times={m.band_times} entry={0} stop={-1} target={r.plan.target_r} paths={m.sample_paths} height={320} unit="R" />
+            ) : (
+              <FanChart bands={m.bands} times={m.band_times} entry={r.plan.entry} stop={r.plan.stop} target={r.plan.target} paths={m.sample_paths} height={320} />
+            )}
           </Suspense>
         </section>
         <section className="panel p-4 sm:p-5" aria-labelledby="hist-h">
           <h3 id="hist-h" className="text-base font-medium text-fg">
-            Distribuição do preço às {m.until}
+            Distribuição {hidden ? 'do resultado' : 'do preço'} às {m.until}
           </h3>
-          <p className="mb-3 text-xs text-muted">Replays por faixa de preço. Verde acima da entrada, vermelho abaixo.</p>
+          <p className="mb-3 text-xs text-muted">Replays por faixa {hidden ? 'de R' : 'de preço'}. Verde acima da entrada, vermelho abaixo.</p>
           <Suspense fallback={<Skeleton className="h-[220px]" />}>
-            <CloseHistogram hist={m.hist} entry={r.plan.entry} height={220} />
+            <CloseHistogram hist={m.hist} entry={hidden ? 0 : r.plan.entry} height={220} unit={hidden ? 'R' : 'price'} />
           </Suspense>
         </section>
       </div>
@@ -260,7 +332,7 @@ function Results({ exp }: { exp: Experiment }) {
             <p className="mt-2 text-xs text-muted">Sessões curtas excluídas: {r.data.short_sessions_left_out.map((s) => shortDate(s.date)).join(', ')}.</p>
           )}
           <div className="mt-4 flex flex-wrap gap-2">
-            <Button size="sm" onClick={() => again.mutate()} disabled={again.isPending || !!rerun}>
+            <Button size="sm" onClick={() => again.mutate()} disabled={again.isPending || !!rerun || !canRepeat}>
               <RotateCcw /> Repetir com os mesmos dados
             </Button>
             <Button size="sm" variant="ghost" onClick={() => void download(`/experiments/${exp.id}/export?format=json`, `darkpool-tm-${exp.id.slice(0, 8)}.json`)}>
@@ -300,7 +372,9 @@ function Results({ exp }: { exp: Experiment }) {
               <p className="text-sm text-fg">Tamanho simulado da posição</p>
               <DataBadge kind="simulated" />
             </div>
-            {sizing.isLoading ? (
+            {hidden ? (
+              <p className="text-sm text-muted">O dimensionamento usa preços e fica oculto neste laboratório público.</p>
+            ) : sizing.isLoading ? (
               <Spinner />
             ) : sizing.data?.sizing ? (
               <p className="num text-sm text-fg/90">
@@ -338,11 +412,17 @@ function Simulation({ initialExp }: { initialExp: string | null }) {
     history_sessions: 60,
   }))
   const intraday = useIntradayProvider()
-  const [stopRule, setStopRule] = useState<'or_mid' | 'or_low' | 'pct'>('or_mid')
+  const [stopRule, setStopRule] = useState<'or_mid' | 'or_low' | 'atr'>('or_mid')
+  const [atrK, setAtrK] = useState(1.5)
+  /** Public lab: the plan stays on the server (prices hidden); the run sends its rule. */
+  const [serverPlan, setServerPlan] = useState<{ rule: PlanRule; plan: NonNullable<OrbPlanResponse['plan']> } | null>(null)
   const [targetR, setTargetR] = useState(1)
   const [job, setJob] = useState<{ id: string; exp: string } | null>(null)
   const expId = initialExp
-  const set = <K extends keyof Form>(k: K, v: Form[K]) => setF((x) => ({ ...x, [k]: v }))
+  const set = <K extends keyof Form>(k: K, v: Form[K]) => {
+    if (k === 'symbol' || k === 'date' || k === 'snapshot_id' || k === 'or_minutes') setServerPlan(null)
+    setF((x) => ({ ...x, [k]: v }))
+  }
 
   const snaps = useQuery({
     queryKey: ['snapshots', f.symbol, '5m'],
@@ -368,11 +448,26 @@ function Simulation({ initialExp }: { initialExp: string | null }) {
   })
   const planOrb = useMutation({
     mutationFn: () =>
-      api<{ triggered: boolean; reason?: string; refusal?: string; opening_range: { high: number; low: number } | null; plan?: { entry: number; stop: number; target: number; entry_time: string } }>('/plan/orb', {
-        body: { snapshot_id: f.snapshot_id, date: f.date, or_minutes: f.or_minutes, stop_rule: stopRule, target_r: targetR },
+      api<OrbPlanResponse>('/plan/orb', {
+        body: {
+          ...(f.snapshot_id ? { snapshot_id: f.snapshot_id } : {}),
+          symbol: f.symbol,
+          date: f.date,
+          or_minutes: f.or_minutes,
+          stop_rule: stopRule,
+          ...(stopRule === 'atr' ? { atr_k: atrK } : {}),
+          target_r: targetR,
+        },
       }),
     onSuccess: (r) => {
-      if (r.plan) setF((x) => ({ ...x, entry: String(r.plan!.entry), stop: String(r.plan!.stop), target: String(r.plan!.target), entry_time: r.plan!.entry_time }))
+      if (!f.snapshot_id) void qc.invalidateQueries({ queryKey: ['snapshots'] })
+      if (r.plan && r.prices_hidden) {
+        setServerPlan({ rule: r.plan_rule, plan: r.plan })
+        setF((x) => ({ ...x, entry: '', stop: '', target: '', entry_time: r.plan!.entry_time }))
+      } else if (r.plan) {
+        setServerPlan(null)
+        setF((x) => ({ ...x, entry: String(r.plan!.entry), stop: String(r.plan!.stop), target: String(r.plan!.target), entry_time: r.plan!.entry_time }))
+      }
     },
   })
   const run = useMutation({
@@ -381,10 +476,9 @@ function Simulation({ initialExp }: { initialExp: string | null }) {
         body: {
           symbol: f.symbol,
           date: f.date,
-          entry: Number(f.entry),
-          stop: Number(f.stop),
-          target: Number(f.target),
-          entry_time: f.entry_time,
+          ...(serverPlan
+            ? { plan_rule: serverPlan.rule }
+            : { entry: Number(f.entry), stop: Number(f.stop), target: Number(f.target), entry_time: f.entry_time }),
           replays: f.replays,
           seed: f.seed,
           window: f.window,
@@ -404,11 +498,14 @@ function Simulation({ initialExp }: { initialExp: string | null }) {
     else registerFixture.mutate()
   }
 
+  const symbolOk = /^[A-Z]{1,5}(\.[A-Z])?$/.test(f.symbol)
   const e = Number(f.entry)
   const s = Number(f.stop)
   const t = Number(f.target)
   const planErr = f.entry && f.stop && f.target && !(s < e && e < t) ? 'Compra: o stop fica abaixo da entrada e o alvo acima.' : null
-  const ready = /^[A-Z]{1,5}(\.[A-Z])?$/.test(f.symbol) && !!f.date && e > 0 && s > 0 && t > 0 && !planErr && /^\d\d:\d\d$/.test(f.entry_time)
+  const ready = serverPlan
+    ? symbolOk && !!f.date
+    : symbolOk && !!f.date && e > 0 && s > 0 && t > 0 && !planErr && /^\d\d:\d\d$/.test(f.entry_time)
   const shown = exp.data
 
   return (
@@ -462,7 +559,7 @@ function Simulation({ initialExp }: { initialExp: string | null }) {
             )}
           </Field>
           {!f.snapshot_id && intraday?.provider === 'alpaca' && (
-            <Field label="Sessões de histórico" hint="Sessões da NYSE antes do dia do plano (20 a 250). Sessões com lacunas no IEX ficam de fora.">
+            <Field label="Sessões de histórico" hint="Sessões da NYSE antes do dia do plano (20 a 250). Sessões com candles faltando ficam de fora.">
               {(p) => (
                 <Input
                   {...p}
@@ -495,6 +592,7 @@ function Simulation({ initialExp }: { initialExp: string | null }) {
                   <Select {...p} value={stopRule} onChange={(ev) => setStopRule(ev.target.value as typeof stopRule)}>
                     <option value="or_mid">Meio</option>
                     <option value="or_low">Mínima</option>
+                    <option value="atr">ATR</option>
                   </Select>
                 )}
               </Field>
@@ -510,26 +608,79 @@ function Simulation({ initialExp }: { initialExp: string | null }) {
                 )}
               </Field>
             </div>
-            <Button type="button" size="sm" className="mt-2 w-full" disabled={!f.snapshot_id || !f.date || planOrb.isPending} onClick={() => planOrb.mutate()}>
-              <Wand2 /> Preencher plano
+            {stopRule === 'atr' && (
+              <div className="mt-2">
+                <Field label="Multiplicador do ATR" hint="Stop = entrada − K × ATR de 14 candles da sessão até o candle de entrada (trader-exit).">
+                  {(p) => (
+                    <Select {...p} value={atrK} onChange={(ev) => setAtrK(Number(ev.target.value))}>
+                      {[1, 1.5, 2, 2.5, 3].map((n) => (
+                        <option key={n} value={n}>
+                          {n} × ATR
+                        </option>
+                      ))}
+                    </Select>
+                  )}
+                </Field>
+              </div>
+            )}
+            <Button type="button" size="sm" className="mt-2 w-full" disabled={!symbolOk || !f.date || planOrb.isPending} onClick={() => planOrb.mutate()}>
+              <Wand2 /> {planOrb.isPending ? 'Calculando…' : 'Preencher plano'}
             </Button>
-            {!f.snapshot_id && <p className="mt-1.5 text-[11px] text-faint">Escolha um snapshot e uma data.</p>}
-            {planOrb.data && !planOrb.data.plan && <p className="mt-2 text-xs text-caution">{planOrb.data.refusal ?? planOrb.data.reason ?? 'A regra não disparou nesta sessão.'}</p>}
-            {planOrb.data?.opening_range && planOrb.data.plan && (
-              <p className="num mt-2 text-[11px] text-muted">
-                faixa {planOrb.data.opening_range.low.toFixed(2)} a {planOrb.data.opening_range.high.toFixed(2)} · gatilho às {planOrb.data.plan.entry_time}
+            {!f.snapshot_id && (
+              <p className="mt-1.5 text-[11px] text-faint">
+                {f.date ? `Sem snapshot: baixa só os candles de 5 min do dia (${intradayDayLabel(intraday)}) e congela um snapshot.` : 'Escolha uma data.'}
               </p>
             )}
+            {planOrb.data && !planOrb.data.plan && <p className="mt-2 text-xs text-caution">{planOrb.data.refusal ?? planOrb.data.reason ?? 'A regra não disparou nesta sessão.'}</p>}
+            {planOrb.data?.opening_range && planOrb.data.plan && !planOrb.data.prices_hidden && (
+              <p className="num mt-2 text-[11px] text-muted">
+                faixa {planOrb.data.opening_range.low?.toFixed(2)} a {planOrb.data.opening_range.high?.toFixed(2)} · gatilho às {planOrb.data.plan.entry_time}
+                {planOrb.data.plan.atr != null && ` · ATR ${planOrb.data.plan.atr.toFixed(2)} (${planOrb.data.plan.atr_bars} candles)`}
+              </p>
+            )}
+            {planOrb.data?.opening_range && planOrb.data.plan && planOrb.data.prices_hidden && (
+              <p className="num mt-2 text-[11px] text-muted">
+                faixa de {pctLabel(planOrb.data.opening_range.low_pct)} a {pctLabel(planOrb.data.opening_range.high_pct)} da entrada · gatilho às {planOrb.data.plan.entry_time}
+                {planOrb.data.plan.atr_pct != null && ` · ATR ${fmt.num(planOrb.data.plan.atr_pct, 2)} % (${planOrb.data.plan.atr_bars} candles)`}
+              </p>
+            )}
+            {planOrb.data?.snapshot && (
+              <p className="mt-1 text-[11px] text-faint">
+                Dados: {planOrb.data.snapshot.is_fixture ? 'referência do pacote' : planOrb.data.snapshot.provenance.provider_name}
+                {planOrb.data.snapshot.provenance.feed ? ` · feed ${planOrb.data.snapshot.provenance.feed.toUpperCase()}` : ''} · snapshot {planOrb.data.snapshot.sha256.slice(0, 8)} · avaliado em {planOrb.data.evaluated_at}
+              </p>
+            )}
+            {planOrb.data?.notes?.map((n) => (
+              <p key={n} className="mt-1 text-[11px] text-faint">
+                {n}
+              </p>
+            ))}
             {planOrb.isError && <ErrorState error={planOrb.error} className="mt-2" />}
           </fieldset>
 
+          {serverPlan && (
+            <div className="rounded-[var(--radius-md)] border border-line bg-abyss/40 p-3 text-sm" aria-label="Plano no servidor">
+              <p className="text-fg">Plano calculado e guardado no servidor</p>
+              <p className="num mt-1 text-xs text-muted">
+                entrada às {serverPlan.plan.entry_time} (0R) · stop −1R ({pctLabel(serverPlan.plan.stop_pct)}) · alvo {fmt.r(serverPlan.plan.target_r, 2)} ({pctLabel(serverPlan.plan.target_pct)}) · {serverPlan.plan.stop_label}
+              </p>
+              <p className="mt-1 text-[11px] text-faint">{planOrb.data?.display_note}</p>
+              <Button type="button" size="sm" variant="ghost" className="mt-2" onClick={() => setServerPlan(null)}>
+                Digitar um plano próprio
+              </Button>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Horário (NY)" hint="Fechamento do candle de entrada.">
-              {(p) => <Input {...p} type="time" step={300} min="09:35" max="16:00" value={f.entry_time} onChange={(ev) => set('entry_time', ev.target.value)} />}
-            </Field>
-            <Field label="Entrada (US$)">{(p) => <Input {...p} type="number" step="0.01" inputMode="decimal" value={f.entry} onChange={(ev) => set('entry', ev.target.value)} />}</Field>
-            <Field label="Stop (US$)">{(p) => <Input {...p} type="number" step="0.01" inputMode="decimal" value={f.stop} onChange={(ev) => set('stop', ev.target.value)} />}</Field>
-            <Field label="Alvo (US$)">{(p) => <Input {...p} type="number" step="0.01" inputMode="decimal" value={f.target} onChange={(ev) => set('target', ev.target.value)} />}</Field>
+            {!serverPlan && (
+              <>
+                <Field label="Horário (NY)" hint="Fechamento do candle de entrada.">
+                  {(p) => <Input {...p} type="time" step={300} min="09:35" max="16:00" value={f.entry_time} onChange={(ev) => set('entry_time', ev.target.value)} />}
+                </Field>
+                <Field label="Entrada (US$)">{(p) => <Input {...p} type="number" step="0.01" inputMode="decimal" value={f.entry} onChange={(ev) => set('entry', ev.target.value)} />}</Field>
+                <Field label="Stop (US$)">{(p) => <Input {...p} type="number" step="0.01" inputMode="decimal" value={f.stop} onChange={(ev) => set('stop', ev.target.value)} />}</Field>
+                <Field label="Alvo (US$)">{(p) => <Input {...p} type="number" step="0.01" inputMode="decimal" value={f.target} onChange={(ev) => set('target', ev.target.value)} />}</Field>
+              </>
+            )}
             <Field label="Replays">{(p) => <Input {...p} type="number" min={100} max={50000} step={1000} value={f.replays} onChange={(ev) => set('replays', ev.target.valueAsNumber)} />}</Field>
             <Field label="Seed">{(p) => <Input {...p} type="number" min={0} value={f.seed} onChange={(ev) => set('seed', ev.target.valueAsNumber)} />}</Field>
           </div>

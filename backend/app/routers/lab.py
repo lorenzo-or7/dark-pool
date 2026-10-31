@@ -6,6 +6,7 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import io
+import json
 import uuid
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -20,7 +21,8 @@ from ..db import (data_snapshots, experiments, new_id, now, simulated_trades, si
 from ..engines.runner import load_module
 from ..schemas import (BacktestRequest, OrbPlanRequest, RiskCheckRequest, StrategyCreate, StrategyUpdate,
                        TimeMachineRequest)
-from ..services import alpaca
+from ..services import alpaca, day_bars, orb_plan
+from ..services import price_view as pv
 from ..services import jobs as jobsvc
 from ..services import market_calendar as mcal
 from ..services import market_data as md
@@ -183,8 +185,12 @@ def run_timemachine(body: TimeMachineRequest, user: CurrentUser = Depends(curren
         with tx(user.id, user.email) as conn:
             _get_strategy(conn, user, body.strategy_id)  # 404 unless it belongs to this lab
     _new_data_allowed(body.snapshot_id, "5m")
-    params = body.model_dump(mode="json", exclude={"title"})
-    title = body.title or (f"Time Machine · {body.symbol} {body.date.isoformat()} {body.entry_time} · "
+    params = body.model_dump(mode="json", exclude={"title"}, exclude_none=False)
+    if body.plan_rule is not None:
+        for k in ("entry", "stop", "target", "entry_time"):
+            params.pop(k, None)
+    when = body.entry_time or f"ORB {body.or_minutes} min"
+    title = body.title or (f"Time Machine · {body.symbol} {body.date.isoformat()} {when} · "
                            f"{body.replays:,} replays · seed {body.seed}").replace(",", ".")
     return _submit_experiment(user, "timemachine.run", "monte_carlo", title, params,
                               strategy_id=body.strategy_id)
@@ -208,6 +214,20 @@ def run_backtest(body: BacktestRequest, user: CurrentUser = Depends(current_user
                               version=version, dataset="split" if body.split_date else "full")
 
 
+def _fixture_ids(conn, workspace_id: uuid.UUID) -> set[str]:  # noqa: ANN001
+    """Snapshots of the package's reference file: runs on them keep their dollar values."""
+    return {str(r[0]) for r in conn.execute(select(data_snapshots.c.id).where(
+        data_snapshots.c.workspace_id == workspace_id, data_snapshots.c.is_fixture.is_(True)))}
+
+
+def _is_fixture_run(row: dict, fixtures: set[str]) -> bool:
+    sid = row.get("data_snapshot_id") or (row.get("params") or {}).get("snapshot_id")
+    res = row.get("results")
+    if isinstance(res, dict) and isinstance(res.get("snapshot"), dict) and res["snapshot"].get("is_fixture"):
+        return True
+    return sid is not None and str(sid) in fixtures
+
+
 @router.get("/experiments")
 def list_experiments(user: CurrentUser = Depends(current_user), kind: str | None = None,
                      strategy_id: uuid.UUID | None = None, limit: int = Query(50, ge=1, le=200)) -> list[dict]:
@@ -221,7 +241,11 @@ def list_experiments(user: CurrentUser = Depends(current_user), kind: str | None
     if strategy_id:
         q = q.where(experiments.c.strategy_id == strategy_id)
     with tx(user.id, user.email) as conn:
-        return rows(conn.execute(q))
+        out = rows(conn.execute(q))
+        fixtures = _fixture_ids(conn, user.workspace_id) if pv.hiding() else set()
+    if pv.hiding():
+        out = [x if _is_fixture_run(x, fixtures) else {**x, "params": pv.params_view(x.get("params"))} for x in out]
+    return out
 
 
 @router.get("/experiments/{eid}")
@@ -234,11 +258,12 @@ def get_experiment(eid: uuid.UUID, user: CurrentUser = Depends(current_user)) ->
         sim = conn.execute(select(simulation_runs).where(simulation_runs.c.experiment_id == eid)).mappings().first()
         trades = rows(conn.execute(select(simulated_trades).where(simulated_trades.c.experiment_id == eid)
                                    .order_by(simulated_trades.c.entry_date, simulated_trades.c.entry_time)))
+        fixtures = _fixture_ids(conn, user.workspace_id) if pv.hiding() else set()
     out = {**ser(dict(e)), "simulation": ser(dict(sim)) if sim else None, "trades": trades}
     snap = (out.get("results") or {}).get("snapshot") if isinstance(out.get("results"), dict) else None
     if isinstance(snap, dict) and "provenance" not in snap:  # results saved before provenance existed
         snap["provenance"] = prov.provenance_for_source(snap.get("source"), bool(snap.get("is_fixture")))
-    return out
+    return pv.experiment_view(out, _is_fixture_run(out, fixtures))
 
 
 @router.delete("/experiments/{eid}", status_code=204)
@@ -265,6 +290,8 @@ def export_experiment(eid: uuid.UUID, format: Literal["json", "csv"] = "json",  
     buf = io.StringIO()
     cols = ["symbol", "source", "dataset", "entry_date", "entry_time", "entry", "stop", "target", "exit_price",
             "exit_date", "outcome", "r_multiple"]
+    if any(t.get("prices_hidden") for t in e["trades"]):
+        cols = [c for c in cols if c not in pv.TRADE_PRICE_FIELDS]
     w = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
     w.writeheader()
     for t in e["trades"]:
@@ -307,6 +334,10 @@ def get_job(job_id: uuid.UUID, user: CurrentUser = Depends(current_user)) -> dic
     if j is None:
         raise not_found("Tarefa")
     j.pop("dedupe_key", None)
+    if pv.hiding():
+        with tx(user.id, user.email) as conn:
+            fixtures = _fixture_ids(conn, user.workspace_id)
+        j = pv.job_view(j, _is_fixture_run({"params": j.get("params")}, fixtures))
     return ser(j)
 
 
@@ -376,7 +407,7 @@ def snapshot_sessions(sid: uuid.UUID, user: CurrentUser = Depends(current_user))
         raise bad_request("O replay usa snapshots de candles de 5 minutos.")
     days = _session_bars(chart)
     quality = None
-    if s["source"] == alpaca.SOURCE:
+    if alpaca.is_alpaca_source(s["source"]):
         quality = alpaca.session_quality(md.read_snapshot_text(s["sha256"], user.workspace_id))
     return {"snapshot": ser(s), "sessions": [{"date": d, "bars": len(v), "full": len(v) == 78}
                                              for d, v in sorted(days.items())],
@@ -396,42 +427,67 @@ def snapshot_bars(sid: uuid.UUID, date: dt.date, user: CurrentUser = Depends(cur
 
 # ---------------------------------------------------------------- ORB plan (trader-entry + trader-exit)
 
+def _plan_snapshot(body: OrbPlanRequest, user: CurrentUser) -> dict:
+    """The snapshot the ORB plan reads: the one asked for, or the plan day's bars downloaded now
+    from the 5-minute provider and frozen (content-addressed: the same bars reuse the same row)."""
+    if body.snapshot_id is not None:
+        s, _ = _snapshot(user, body.snapshot_id)
+        if body.symbol and body.symbol != s["symbol"]:
+            raise bad_request(f"O snapshot é de {s['symbol']}, não de {body.symbol}.", "symbol_mismatch")
+        if s["interval"] != "5m":
+            raise bad_request("O plano ORB precisa de um snapshot de candles de 5 minutos.")
+        return s
+    _new_data_allowed(None, "5m")
+    try:
+        got = day_bars.fetch(body.symbol, body.date)
+    except day_bars.DayBarsError as e:
+        status_code = 503 if e.code in PROVIDER_DOWN else 502 if e.code.startswith("provider") else 422
+        raise HTTPException(status_code, {"code": e.code, "message": e.message})
+    with tx(user.id, user.email) as conn:
+        try:
+            row = md.freeze_snapshot(conn, user.workspace_id, user.id, got.text, body.symbol, "5m", got.range,
+                                     got.source, got.fetched_at)
+        except md.DataError as e:
+            raise HTTPException(502, {"code": e.code, "message": e.message})
+        audit(conn, user, "download", "snapshot", row["id"], {"source": got.source, "purpose": "plan.orb"})
+    return dict(row)
+
+
+PROVIDER_DOWN = {"source_disabled", "missing_key", "provider_paused", "quota_exhausted", "rate_limited",
+                 "not_integrated", "needs_config"}
+
+
 @router.post("/plan/orb")
-def orb_plan(body: OrbPlanRequest, user: CurrentUser = Depends(current_user)) -> dict:
-    """The day's opening-range breakout from a frozen snapshot: trader-entry finds the
-    trigger bar, trader-exit sets the stop and the target. Pure calls, no network."""
+def orb_plan_route(body: OrbPlanRequest, user: CurrentUser = Depends(current_user)) -> dict:
+    """The day's opening-range breakout: trader-entry finds the trigger bar, trader-exit sets the
+    stop (opening range, percent or atr:K on the session's bars up to the entry) and the target.
+    From a frozen snapshot, or from the plan day's bars downloaded now and frozen first.
+    With DP_SHOW_TRIGGER_PRICES off, a plan priced from provider data comes back in R and percent,
+    with `plan_rule` to run the Time Machine on the server's own copy of the plan."""
     _engine_day(body.date)
-    s, _ = _snapshot(user, body.snapshot_id)
-    if s["interval"] != "5m":
-        raise bad_request("O plano ORB precisa de um snapshot de candles de 5 minutos.")
-    entry, exitm = load_module("entry"), load_module("exit")
+    s = _plan_snapshot(body, user)
     text = md.read_snapshot_text(s["sha256"], user.workspace_id)
-    close_utc = entry.eastern_to_utc(dt.datetime.combine(body.date, dt.time(16, 5)))
+    snap = {"id": str(s["id"]), "sha256": s["sha256"], "source": s["source"], "range": s["range"],
+            "fetched_at": ser(s["fetched_at"]), "is_fixture": bool(s["is_fixture"]),
+            "provenance": prov.provenance_for_source(s["source"], bool(s["is_fixture"]))}
+    quality = alpaca.session_quality(text) if alpaca.is_alpaca_source(s["source"]) else None
     try:
-        chart = entry.parse_chart(text, s["symbol"])
-        res = entry.evaluate(chart, close_utc, setup="orb", or_minutes=body.or_minutes, interval="5m")
-    except entry.EntryError as e:
+        res = orb_plan.compute(text, s["symbol"], body.date, body.or_minutes, body.stop_rule, body.stop_pct,
+                               body.atr_k, body.target_r)
+    except orb_plan.PlanRefusal as e:
         raise bad_request(str(e), "entry_error")
-    pub = entry.public(res)
-    orr, trig = pub.get("opening_range"), pub.get("trigger")
-    if pub["status"] != "triggered" or not trig or not orr:
-        return {"triggered": False, "status": pub["status"], "reason": pub.get("reason"), "opening_range": orr,
-                "engine": "trader-entry"}
-    try:
-        plan = exitm.compute(exitm.D(str(trig["price"])), body.stop_rule, exitm.D(str(body.stop_pct)), "r",
-                             exitm.D(str(body.target_r)),
-                             or_high=orr["high"], or_low=orr["low"])
-    except exitm.PlanError as e:
-        return {"triggered": True, "plan": None, "refusal": str(e), "trigger": trig, "opening_range": orr}
-    hh, mm = (int(x) for x in str(trig["time"])[:5].split(":"))
-    return {
-        "triggered": True, "trigger": trig, "opening_range": orr, "reason": pub.get("reason"),
-        "plan": {"symbol": s["symbol"], "date": body.date.isoformat(), "entry_time": f"{hh:02d}:{mm:02d}",
-                 "entry": float(plan["entry"]), "stop": float(plan["stop"]), "target": float(plan["target"]),
-                 "risk_per_share": float(plan["risk"]), "stop_label": plan["stop_label"],
-                 "target_label": plan["target_label"]},
-        "engine": "trader-entry + trader-exit",
-    }
+    rule = {"or_minutes": body.or_minutes, "stop_rule": body.stop_rule, "stop_pct": body.stop_pct,
+            "atr_k": body.atr_k, "target_r": body.target_r}
+    out = {**res, "snapshot": snap, "data_quality": quality, "plan_rule": rule, "prices_hidden": False}
+    if pv.hiding() and not s["is_fixture"]:
+        entry = (res.get("plan") or {}).get("entry") or (res.get("trigger") or {}).get("price")
+        out.update(plan=pv.plan_view(res.get("plan")), opening_range=pv.range_view(res.get("opening_range"), entry),
+                   trigger=pv.trigger_view(res.get("trigger")), prices_hidden=True, display_note=pv.NOTE)
+        if isinstance(out.get("refusal"), str) and pv.PRICE_TEXT.search(out["refusal"]):
+            out["refusal"] = "O trader-exit recusou o plano (o motivo cita preços, ocultos neste laboratório)."
+        if isinstance(out.get("reason"), str) and pv.PRICE_TEXT.search(out["reason"]):
+            out["reason"] = "A regra ainda não disparou nesta sessão."
+    return out
 
 
 # ---------------------------------------------------------------- simulated risk and sizing

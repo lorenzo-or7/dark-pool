@@ -31,6 +31,7 @@ SCRIPTS = {
     "risk": ("trader-risk", "check"),
     "news": ("trader-news", "news"),
     "analyst": ("trader-analyst", "facts"),
+    "alerts": ("trader-alerts", "alerts"),
 }
 
 
