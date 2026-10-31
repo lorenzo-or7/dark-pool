@@ -111,8 +111,9 @@ def test_public_quotes_keep_metrics_and_drop_prices(public_default: TestClient,
 
 def test_public_refuses_unofficial_source(public_default: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     c = public_default
-    # 5-minute bars forced to Yahoo (with the Alpaca keys set, "auto" would pick Alpaca).
+    # 5-minute bars and the scanner forced to Yahoo (with the Alpaca keys set, "auto" would pick Alpaca).
     monkeypatch.setenv("DP_INTRADAY_PROVIDER", "yahoo")
+    monkeypatch.setenv("DP_SCAN_PROVIDER", "yahoo")
     _reset_settings()
     r = c.post("/api/timemachine", json=PLAN)
     assert r.status_code == 503 and r.json()["detail"]["code"] == "source_disabled"

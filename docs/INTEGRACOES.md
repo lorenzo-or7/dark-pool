@@ -275,3 +275,33 @@ de outro dia sem download, nada dispara duas vezes com o estado devolvido, erros
 401, 429 e 500 sem chaves, caminho Yahoo idêntico ao motor lendo os mesmos arquivos salvos da skill,
 validação (campos extras, preço negativo, horário inválido, mais de 50 regras), política do modo
 público e o painel guardando as regras no navegador e verificando só quando pedido.
+
+---
+
+## Scanner diário e ORB com barras da Alpaca (Bloco 6)
+
+O trader-scanner aceita um pacote offline `{TICKER: gráfico v8}`. Com a Alpaca, o servidor baixa as
+barras de todos os ativos (vários por requisição), monta esse pacote e chama o motor com `--offline`
+e `--now`/`--at`. O motor não foi editado; as regras (setups diários, faixa de abertura, "todos os
+candles até o corte") são as dele.
+
+| Item | Valor |
+|---|---|
+| Código | `alpaca.fetch_bars_multi()`, `alpaca.scanner_chart()`, `alpaca.daily_window()`; job `_run_scan` em `services/tasks.py` (`scan.daily` e `scan.orb`) |
+| Requisição | `GET /v2/stocks/bars` com até 200 símbolos por série de páginas (`limit=10000` conta barras de todos), `feed=sip` (ou `DP_ALPACA_FEED`), `adjustment=all` |
+| Diária | `timeframe=1Day`, 70 sessões até agora − 16 min. `meta.regularMarketPrice/regularMarketVolume` = fechamento e volume da última barra (o que o filtro de liquidez do motor lê; com SIP o volume é o consolidado). Uma sessão em andamento chega como barra parcial e o próprio motor a descarta até o fechamento |
+| ORB | `timeframe=5Min` do pregão escolhido (padrão: hoje) da abertura até o corte. Corte padrão: agora (no máximo agora − 16 min, arredondado à grade de 5 min) ou 15:30 para um dia passado; um corte ainda não liberado falha com `not_available_yet`. O motor confere "todos os candles de 9:30 ao corte" |
+| Yahoo | `DP_SCAN_PROVIDER=yahoo` (ou sem chaves): o motor lê o spark do Yahoo sozinho, como antes; ORB só do pregão de hoje |
+| Política | Com `DP_SHOW_RAW_PRICES` desligado: `price`, `volume`, `or_high` e `or_low` saem nulos; ficam padrão, horário do gatilho, % acima da faixa e RSI |
+| Frontend | Scanner: "Diária (pré-abertura)" ou "ORB (5 min)" com faixa, pregão e corte; colunas do ORB (gatilho, % acima da faixa, fechamento, faixa) |
+
+Consumo de cota: diária ≈ 1 chamada a cada 140 ativos (70 barras); ORB ≈ 1 chamada a cada 125
+ativos com o corte no fim do dia (menos de manhã). Universo de 6.000 ativos: ~45 a 50 chamadas,
+abaixo do limite de 150/min configurado.
+
+Testes (`backend/tests/test_scanner_alpaca.py`, fixtures DERIVADAS de `tests/scanner_fixtures.py`;
+o oráculo é o motor lendo os arquivos ORIGINAIS da skill): diária com os mesmos padrões e preços que
+o motor no spark original (19 ativos); paginação e lotes; filtro de liquidez pelo volume da última
+barra; ORB de 19/10 às 10:15 com as mesmas 42 rupturas do motor no `wall5m` original (TSLA 364,18 às
+10:15, faixa até 362,18), em 2 lotes; corte ao vivo limitado ao atraso do plano gratuito; Yahoo só
+hoje; validação; política do modo público.

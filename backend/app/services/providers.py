@@ -100,6 +100,14 @@ def bars_provider(interval: str) -> str:
     return choice
 
 
+def scan_provider() -> str:
+    """Who supplies the scanner's bars (DP_SCAN_PROVIDER). No fallback."""
+    s = get_settings()
+    if s.dp_scan_provider == "auto":
+        return "alpaca" if (s.alpaca_api_key_id and s.alpaca_api_secret_key) else "yahoo"
+    return s.dp_scan_provider
+
+
 def quote_provider() -> str:
     """Who supplies the alerts' quotes (DP_QUOTE_PROVIDER). No fallback."""
     s = get_settings()

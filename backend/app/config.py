@@ -94,6 +94,9 @@ class Settings(BaseSettings):
     dp_alpaca_quote_feed: Literal["delayed_sip", "iex"] = "delayed_sip"
     # Who supplies the alerts' quotes: auto (Alpaca with keys, else Yahoo), alpaca or yahoo. No fallback.
     dp_quote_provider: Literal["auto", "alpaca", "yahoo"] = "auto"
+    # Who supplies the scanner's bars (Bloco 6): auto (Alpaca SIP with keys, else Yahoo spark read by
+    # the engine itself), alpaca or yahoo. Daily backtests stay on Yahoo. No fallback.
+    dp_scan_provider: Literal["auto", "alpaca", "yahoo"] = "auto"
 
     # Display policy (see services/policy.py). Empty = the default for the mode: everything
     # visible in the local demo, restrictive in the public lab. Applied by the API, not the UI.
@@ -125,7 +128,7 @@ class Settings(BaseSettings):
     def _blank_is_delayed_sip(cls, v: object) -> object:
         return "delayed_sip" if isinstance(v, str) and not v.strip() else (v.strip().lower() if isinstance(v, str) else v)
 
-    @field_validator("dp_quote_provider", mode="before")
+    @field_validator("dp_quote_provider", "dp_scan_provider", mode="before")
     @classmethod
     def _blank_quote_provider(cls, v: object) -> object:
         return "auto" if isinstance(v, str) and not v.strip() else (v.strip().lower() if isinstance(v, str) else v)

@@ -226,12 +226,18 @@ class TimeMachineRequest(Strict):
 # ---------------------------------------------------------------- scanner
 
 class ScanRequest(Strict):
+    mode: Literal["daily", "orb"] = "daily"
     source: Literal["symbols", "watchlist", "universe"] = "symbols"
     symbols: list[Symbol] = Field(default_factory=list, max_length=300)
     watchlist_id: uuid.UUID | None = None
     limit: int = Field(default=200, ge=1, le=6000)
     min_price: float = Field(default=5, ge=0, le=100000)
     min_volume: int = Field(default=1_000_000, ge=0, le=10**10)
+    # orb only: the opening range, the session (default: today) and the clock cut (HH:MM New York;
+    # default: now, or 15:30 for a past day; never later than the data the provider can serve).
+    or_minutes: int = Field(default=15, ge=5, le=120)
+    day: dt.date | None = None
+    at: str | None = None
 
     @field_validator("symbols")
     @classmethod
@@ -242,6 +248,28 @@ class ScanRequest(Strict):
             if s not in out:
                 out.append(s)
         return out
+
+    @field_validator("at")
+    @classmethod
+    def check_at(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if not HHMM.match(v):
+            raise ValueError("use HH:MM (horário de Nova York)")
+        h, m = map(int, v.split(":"))
+        if (h * 60 + m) % 5 or not 9 * 60 + 35 <= h * 60 + m <= 16 * 60:
+            raise ValueError("horário na grade de 5 minutos entre 09:35 e 16:00")
+        return v
+
+    @model_validator(mode="after")
+    def check_mode(self) -> ScanRequest:
+        if self.or_minutes % 5:
+            raise ValueError("faixa de abertura em múltiplos de 5 minutos")
+        if self.mode == "daily" and (self.day or self.at):
+            raise ValueError("dia e horário valem só para a varredura ORB")
+        if self.day and self.day > dt.date.today():
+            raise ValueError("a data não pode estar no futuro")
+        return self
 
 
 # ---------------------------------------------------------------- watchlists / journal / settings

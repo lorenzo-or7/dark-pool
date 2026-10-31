@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import httpx
@@ -553,3 +554,112 @@ def fetch_snapshots(symbols: list[str], feed_name: str | None = None) -> tuple[d
             else:
                 quotes[sym] = q
     return quotes, errors
+
+
+# ---------------------------------------------------------------- many symbols for the scanner (Bloco 6)
+
+SCAN_CHUNK = 200            # symbols per request series (URL length); `limit` counts bars across all of them
+TIMEFRAME_1D = "1Day"
+DAILY_SESSIONS = 70         # the daily scan reads ~3 months of closes (Yahoo spark range=3mo); the engine needs 30
+
+
+def fetch_bars_multi(symbols: list[str], timeframe: str, start: dt.datetime, end: dt.datetime,
+                     feed_name: str | None = None,
+                     on_page: Callable[[int], None] | None = None) -> tuple[dict[str, list[dict]], int]:
+    """Bars of many symbols between start and end (inclusive), SCAN_CHUNK symbols per request series,
+    following next_page_token (the response is sorted by symbol, then time; a page may stop in the
+    middle of a symbol). Every page spends one call of the shared quota. -> ({SYM: bars}, pages)."""
+    f = feed_name or feed()
+    try:
+        providers.check_allowed(PROVIDER_ID)
+    except providers.ProviderUnavailable as e:
+        raise AlpacaError(e.code, e.message)
+    out: dict[str, list[dict]] = {}
+    pages = 0
+    for i in range(0, len(symbols), SCAN_CHUNK):
+        chunk = symbols[i:i + SCAN_CHUNK]
+        params = {"symbols": ",".join(chunk), "timeframe": timeframe, "start": _rfc3339(start),
+                  "end": _rfc3339(end), "limit": PAGE_LIMIT, "adjustment": ADJUSTMENT, "feed": f, "sort": "asc"}
+        token: str | None = None
+        for _ in range(MAX_PAGES * 10):
+            try:
+                providers.acquire(PROVIDER_ID)
+            except providers.ProviderUnavailable as e:
+                raise AlpacaError(e.code, e.message)
+            try:
+                r = _http_get(dict(params, **({"page_token": token} if token else {})))
+            except httpx.TimeoutException:
+                providers.failure(PROVIDER_ID)
+                raise AlpacaError("provider_timeout", "A Alpaca não respondeu a tempo.")
+            except httpx.HTTPError as e:
+                providers.failure(PROVIDER_ID)
+                raise AlpacaError("provider_unreachable", f"Não foi possível acessar a Alpaca ({type(e).__name__}).")
+            if r.status_code != 200:
+                if r.status_code in (403, 422) and _subscription_refusal(r):
+                    raise AlpacaError("provider_subscription",
+                                      f"O plano da Alpaca não cobre esse pedido no feed {f.upper()} (HTTP {r.status_code}).")
+                if r.status_code in (401, 403):
+                    providers.failure(PROVIDER_ID)
+                    raise AlpacaError("provider_auth", f"A Alpaca recusou a chave do servidor (HTTP {r.status_code}).")
+                if r.status_code == 429:
+                    providers.failure(PROVIDER_ID, "rate_limited")
+                    raise AlpacaError("rate_limited", "A Alpaca está limitando requisições (HTTP 429). Tente em um minuto.")
+                if r.status_code in (400, 422):
+                    raise AlpacaError("provider_bad_request",
+                                      f"A Alpaca recusou o pedido (HTTP {r.status_code}): {_message(r) or 'sem detalhe'}")
+                providers.failure(PROVIDER_ID)
+                raise AlpacaError("provider_error", f"A Alpaca respondeu HTTP {r.status_code}.")
+            try:
+                doc = r.json()
+                bars = doc.get("bars") or {}
+                token = doc.get("next_page_token")
+            except (ValueError, AttributeError):
+                providers.failure(PROVIDER_ID)
+                raise AlpacaError("bad_payload", "A Alpaca devolveu um formato inesperado.")
+            providers.success(PROVIDER_ID)
+            pages += 1
+            if on_page:
+                on_page(pages)
+            for sym, rows in bars.items():
+                out.setdefault(sym, []).extend(rows or [])
+            if not token:
+                break
+        else:
+            raise AlpacaError("too_many_pages", "Páginas demais na mesma consulta: peça menos ativos.")
+    return out, pages
+
+
+def scanner_chart(symbol: str, bars: list[dict], feed_name: str, granularity: str,
+                  keep: Callable[[int], bool] | None = None) -> dict:
+    """Alpaca bars of one symbol -> the Yahoo v8 chart the scanner reads (series_from_result).
+    meta.regularMarketPrice / regularMarketVolume = the last bar's close and volume, as Yahoo's
+    spark meta gives them (the daily liquidity filter reads those two)."""
+    rows = {}
+    for b in bars:
+        ts = _epoch(b["t"])
+        if keep is None or keep(ts):
+            rows[ts] = b
+    stamps = sorted(rows)
+    last = rows[stamps[-1]] if stamps else None
+    return {"chart": {"error": None, "result": [{
+        "meta": {"symbol": symbol.replace(".", "-"), "dataGranularity": granularity, "currency": "USD",
+                 "exchangeTimezoneName": "America/New_York", "dataProvider": PROVIDER_ID, "feed": feed_name,
+                 "adjustment": ADJUSTMENT,
+                 "regularMarketPrice": last["c"] if last else None,
+                 "regularMarketVolume": int(last["v"]) if last else None},
+        "timestamp": stamps,
+        "indicators": {"quote": [{k: [rows[t][s] for t in stamps] for k, s in
+                                  (("open", "o"), ("high", "h"), ("low", "l"), ("close", "c"))}
+                                 | {"volume": [int(rows[t]["v"]) for t in stamps]}]},
+    }]}}
+
+
+def daily_window(now_utc: dt.datetime | None = None, sessions: int = DAILY_SESSIONS) -> tuple[dt.datetime, dt.datetime]:
+    """Start: the open of the session `sessions` back; end: now minus 16 minutes (the free plan's
+    SIP limit). A session still in progress comes as a partial daily bar, which the scanner itself
+    drops until the close."""
+    end = available_until(now_utc)
+    cal = mcal._calendar()
+    past = [ts.date() for ts in cal.sessions if ts.date() <= end.astimezone(mcal.NY).date()]
+    first = past[-sessions] if len(past) >= sessions else past[0]
+    return _open_close(first)[0], end

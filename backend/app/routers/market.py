@@ -27,7 +27,7 @@ from ..services import policy
 from ..services import providers as prov
 from ..services import market_data as md
 from ..services.tasks import universe_path, watchlist_symbols
-from .common import audit, bad_request, not_found, rows, ser
+from .common import audit, bad_request, calendar_refusal, not_found, rows, ser
 
 router = APIRouter(prefix="/api", dependencies=[Depends(current_user)])
 
@@ -305,8 +305,14 @@ def create_scan(body: ScanRequest, user: CurrentUser = Depends(current_user)) ->
         params["source"] = "symbols"
     elif body.source == "symbols" and not body.symbols:
         raise bad_request("Informe ao menos um ticker.")
+    if body.mode == "orb" and body.day is not None:
+        try:
+            mcal.require_engine_session(body.day)
+        except mcal.CalendarError as e:
+            raise calendar_refusal(e.code, e.message)
     try:
-        prov.check_allowed("yahoo")  # the daily scan reads Yahoo's spark endpoint
+        # DP_SCAN_PROVIDER: Alpaca bars downloaded by the server, or Yahoo's spark read by the engine itself.
+        prov.check_allowed(prov.scan_provider())
     except prov.ProviderUnavailable as e:
         raise HTTPException(ERROR_STATUS[e.code], {"code": e.code, "message": e.message})
     scan_id = new_id()
@@ -314,12 +320,12 @@ def create_scan(body: ScanRequest, user: CurrentUser = Depends(current_user)) ->
     dedupe = {k: v for k, v in params.items() if k != "scan_id"}
 
     def created(conn, job_id):  # noqa: ANN001, ANN202
-        conn.execute(scan_runs.insert().values(id=scan_id, workspace_id=user.workspace_id, mode="daily",
+        conn.execute(scan_runs.insert().values(id=scan_id, workspace_id=user.workspace_id, mode=body.mode,
                                                params=dedupe, status="queued", job_id=job_id, created_by=user.id,
                                                created_at=now()))
         audit(conn, user, "create", "scan", scan_id)
 
-    job, was_created = jobsvc.submit(user, "scan.daily", params, on_created=created, dedupe_params=dedupe)
+    job, was_created = jobsvc.submit(user, f"scan.{body.mode}", params, on_created=created, dedupe_params=dedupe)
     return {"job": ser(job), "created": was_created, "scan_id": job["params"]["scan_id"]}
 
 

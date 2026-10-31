@@ -27,6 +27,7 @@ const SETUP_LABEL: Record<string, string> = {
   reclaim_ma20: 'Retomou MM20',
   oversold: 'Sobrevenda',
   oversold_bounce: 'Repique',
+  orb: 'Rompimento da faixa de abertura',
 }
 
 type ChartRes = {
@@ -42,7 +43,19 @@ type ChartRes = {
 }
 
 // price and volume are null when the lab's display policy hides raw prices (public lab).
-type Hit = { symbol: string; setups: string[]; price: number | null; close_date: string; rsi: number | null; volume: number | null }
+type Hit = {
+  symbol: string
+  setups: string[]
+  price: number | null
+  close_date?: string
+  rsi?: number | null
+  volume?: number | null
+  /** orb: close time of the trigger bar, % above the range high, range high / low (null when prices are hidden) */
+  at?: string
+  pct_over?: number
+  or_high?: number | null
+  or_low?: number | null
+}
 type ScanRow = {
   id: string
   status: string
@@ -51,6 +64,8 @@ type ScanRow = {
   job_id: string
   created_at: string
   result?: {
+    mode?: 'daily' | 'orb'
+    or_minutes?: number
     as_of: string
     universe: number
     scanned: number
@@ -449,6 +464,10 @@ function AssetDetail({ symbol, watchlists, onClose }: { symbol: string; watchlis
 
 function ScanPanel({ watchlists, onPick, picked }: { watchlists: Watchlist[]; onPick: (s: string) => void; picked: string | null }) {
   const qc = useQueryClient()
+  const [mode, setMode] = useState<'daily' | 'orb'>('daily')
+  const [orMinutes, setOrMinutes] = useState(15)
+  const [orbDay, setOrbDay] = useState('')
+  const [orbAt, setOrbAt] = useState('')
   const [source, setSource] = useState<'watchlist' | 'symbols' | 'universe'>('watchlist')
   const [symbols, setSymbols] = useState('AAPL, MSFT, NVDA, TSLA, AMD, KO, JPM, XOM, BAC, F, HD, GE, CCL, RIVN, PLUG')
   const [wid, setWid] = useState('')
@@ -475,6 +494,8 @@ function ScanPanel({ watchlists, onPick, picked }: { watchlists: Watchlist[]; on
     mutationFn: () =>
       api<{ job: Job; scan_id: string }>('/scans', {
         body: {
+          mode,
+          ...(mode === 'orb' ? { or_minutes: orMinutes, day: orbDay || null, at: orbAt || null } : {}),
           source,
           symbols: source === 'symbols' ? symbols.split(/[\s,;]+/).filter(Boolean) : [],
           watchlist_id: source === 'watchlist' ? wid : null,
@@ -495,7 +516,7 @@ function ScanPanel({ watchlists, onPick, picked }: { watchlists: Watchlist[]; on
     return (res?.hits ?? []).filter(
       (h) =>
         (h.price == null || (h.price >= price[0] && h.price <= price[1])) &&
-        (h.rsi == null || (h.rsi >= rsi[0] && h.rsi <= rsi[1])) &&
+        (h.rsi == null || h.rsi === undefined || (h.rsi >= rsi[0] && h.rsi <= rsi[1])) &&
         (setup === 'all' || h.setups.includes(setup)) &&
         (!q || h.symbol.includes(q)),
     )
@@ -510,6 +531,29 @@ function ScanPanel({ watchlists, onPick, picked }: { watchlists: Watchlist[]; on
   })
   const volBy = Object.fromEntries((vols.data?.quotes ?? []).map((q) => [q.symbol, q]))
 
+  const orbRes = res?.mode === 'orb'
+  const orbCols: Column<Hit>[] = [
+    {
+      key: 'symbol',
+      header: 'Ativo',
+      width: 96,
+      sort: (h) => h.symbol,
+      cell: (h) => (
+        <button onClick={() => onPick(h.symbol)} className="num text-fg hover:text-ember focus-visible:text-ember">
+          {h.symbol}
+        </button>
+      ),
+    },
+    { key: 'at', header: 'Gatilho (NY)', sort: (h) => h.at ?? '', cell: (h) => <span className="num">{h.at}</span> },
+    { key: 'pct', header: 'Acima da faixa', align: 'right', sort: (h) => h.pct_over ?? 0, cell: (h) => <span className="num text-up">{fmt.signedPct(h.pct_over)}</span> },
+    { key: 'price', header: 'Fechamento do gatilho', align: 'right', sort: (h) => h.price ?? -1, cell: (h) => <span className="num">{fmt.num(h.price)}</span> },
+    {
+      key: 'range',
+      header: 'Faixa',
+      align: 'right',
+      cell: (h) => <span className="num text-muted">{h.or_low != null && h.or_high != null ? `${fmt.num(h.or_low)} a ${fmt.num(h.or_high)}` : '—'}</span>,
+    },
+  ]
   const cols: Column<Hit>[] = [
     {
       key: 'symbol',
@@ -537,7 +581,7 @@ function ScanPanel({ watchlists, onPick, picked }: { watchlists: Watchlist[]; on
       ),
     },
     { key: 'price', header: 'Preço', align: 'right', sort: (h) => h.price ?? -1, cell: (h) => <span className="num">{fmt.num(h.price)}</span> },
-    { key: 'rsi', header: 'RSI 14', align: 'right', sort: (h) => h.rsi, cell: (h) => <span className="num">{fmt.num(h.rsi, 1)}</span> },
+    { key: 'rsi', header: 'RSI 14', align: 'right', sort: (h) => h.rsi ?? null, cell: (h) => <span className="num">{fmt.num(h.rsi, 1)}</span> },
     { key: 'volume', header: 'Volume', align: 'right', sort: (h) => h.volume ?? -1, cell: (h) => <span className="num">{fmt.compact(h.volume)}</span> },
     {
       key: 'vol',
@@ -547,7 +591,7 @@ function ScanPanel({ watchlists, onPick, picked }: { watchlists: Watchlist[]; on
       cell: (h) => <span className="num text-muted">{volBy[h.symbol]?.volatility_pct != null ? `${fmt.num(volBy[h.symbol].volatility_pct, 2)} %` : '—'}</span>,
     },
     { key: 'spark', header: '1 mês', cell: (h) => <Sparkline values={volBy[h.symbol]?.spark ?? []} /> },
-    { key: 'date', header: 'Fechamento', sort: (h) => h.close_date, cell: (h) => <span className="num text-muted">{shortDate(h.close_date)}</span> },
+    { key: 'date', header: 'Fechamento', sort: (h) => h.close_date ?? '', cell: (h) => <span className="num text-muted">{h.close_date ? shortDate(h.close_date) : '—'}</span> },
   ]
 
   return (
@@ -557,12 +601,43 @@ function ScanPanel({ watchlists, onPick, picked }: { watchlists: Watchlist[]; on
           <h2 id="scan-h" className="text-base font-medium text-fg">
             Varredura de padrões
           </h2>
-          <p className="text-xs text-muted">trader-scanner · fechamentos diários do Yahoo Finance · encontrar um padrão não é recomendação de compra</p>
+          <p className="text-xs text-muted">trader-scanner · fechamentos diários ou candles de 5 min da fonte configurada no servidor · encontrar um padrão não é recomendação de compra</p>
         </div>
       </div>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-[1fr_1fr]">
         <div className="space-y-3">
+          <SegmentedControl
+            label="Tipo de varredura"
+            size="sm"
+            value={mode}
+            onChange={setMode}
+            options={[
+              { value: 'daily', label: 'Diária (pré-abertura)' },
+              { value: 'orb', label: 'ORB (5 min)' },
+            ]}
+          />
+          {mode === 'orb' && (
+            <div className="grid grid-cols-3 gap-2">
+              <Field label="Faixa">
+                {(p) => (
+                  <Select {...p} value={orMinutes} onChange={(e) => setOrMinutes(Number(e.target.value))}>
+                    {[5, 10, 15, 30, 60].map((n) => (
+                      <option key={n} value={n}>
+                        {n} min
+                      </option>
+                    ))}
+                  </Select>
+                )}
+              </Field>
+              <Field label="Pregão" hint="Vazio = hoje.">
+                {(p) => <Input {...p} type="date" value={orbDay} onChange={(e) => setOrbDay(e.target.value)} />}
+              </Field>
+              <Field label="Corte (NY)" hint="Vazio = agora.">
+                {(p) => <Input {...p} type="time" step={300} min="09:35" max="15:30" value={orbAt} onChange={(e) => setOrbAt(e.target.value)} />}
+              </Field>
+            </div>
+          )}
           <SegmentedControl
             label="Origem dos ativos"
             size="sm"
@@ -593,11 +668,11 @@ function ScanPanel({ watchlists, onPick, picked }: { watchlists: Watchlist[]; on
             </Field>
           )}
           {source === 'universe' && (
-            <Field label="Quantidade de ações" hint="As primeiras N do universo. 20 ações por requisição; 5.942 levam cerca de 2 a 3 minutos.">
+            <Field label="Quantidade de ações" hint="As primeiras N do universo. Alpaca: 200 ações por lote; Yahoo: 20 por requisição (5.942 levam 2 a 3 minutos).">
               {(p) => <Input {...p} type="number" min={1} max={6000} value={limit} onChange={(e) => setLimit(Number(e.target.value))} />}
             </Field>
           )}
-          <Field label="Volume mínimo na última sessão">
+          <Field label={mode === 'orb' ? 'Volume mínimo no dia até o corte' : 'Volume mínimo na última sessão'}>
             {(p) => (
               <Select {...p} value={minVol} onChange={(e) => setMinVol(Number(e.target.value))}>
                 <option value={0}>Sem mínimo</option>
@@ -614,7 +689,7 @@ function ScanPanel({ watchlists, onPick, picked }: { watchlists: Watchlist[]; on
           {jobId && (
             <JobProgress
               jobId={jobId}
-              label="Varredura diária"
+              label={mode === 'orb' ? 'Varredura ORB' : 'Varredura diária'}
               onDone={() => {
                 setJobId(null)
                 void qc.invalidateQueries({ queryKey: ['scan', scanId] })
@@ -674,11 +749,11 @@ function ScanPanel({ watchlists, onPick, picked }: { watchlists: Watchlist[]; on
             </div>
             <DataTable
               rows={hits}
-              columns={cols}
+              columns={orbRes ? orbCols : cols}
               rowKey={(h) => h.symbol}
               caption="Ativos que se encaixaram em uma regra do scanner"
               selectedKey={picked}
-              initialSort={{ key: 'volume', dir: 'desc' }}
+              initialSort={orbRes ? { key: 'at', dir: 'asc' } : { key: 'volume', dir: 'desc' }}
               minWidth={860}
               empty={<EmptyState title="Nenhum ativo com padrão nesses filtros">Amplie as faixas de preço e RSI ou escolha outro padrão.</EmptyState>}
             />
