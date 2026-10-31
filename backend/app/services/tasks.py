@@ -15,7 +15,7 @@ from ..config import ENGINE_VERSION, get_settings
 from ..db import (data_snapshots, experiments, now, scan_runs, simulated_trades, simulation_runs, strategies,
                   strategy_versions, tx, watchlist_assets)
 from ..engines.runner import last_error_line, run_script
-from . import alpaca
+from . import alpaca, orb_plan
 from . import market_data as md
 from . import providers
 from .backtest import DAILY_RULES, BacktestError, backtest_daily, backtest_orb
@@ -230,6 +230,21 @@ def timemachine_run(ctx: JobContext) -> dict:
     snap, text = _snapshot_for(ctx, p["symbol"], p.get("snapshot_id"), "60d", "5m", plan_day=p["date"],
                                sessions=p.get("history_sessions"))
     _set_experiment(ctx, exp_id, data_snapshot_id=snap["id"])
+    if p.get("plan_rule"):
+        # The plan kept on the server: trader-entry + trader-exit on the plan day inside this same
+        # snapshot. The prices stay in the results (to reproduce the run); the API decides what to show.
+        rule = p["plan_rule"]
+        ctx.progress(20, "Calculando o plano ORB no servidor (trader-entry + trader-exit)")
+        try:
+            got = orb_plan.compute(text, p["symbol"], datetime.strptime(p["date"], "%Y-%m-%d").date(),
+                                   int(rule["or_minutes"]), rule["stop_rule"], float(rule["stop_pct"]),
+                                   float(rule["atr_k"]), float(rule["target_r"]))
+        except orb_plan.PlanRefusal as e:
+            raise JobFailure(str(e), "entry_error")
+        if not got.get("plan"):
+            raise JobFailure(got.get("refusal") or f"A regra ORB não disparou em {p['date']}: {got.get('reason')}.",
+                             "plan_not_triggered")
+        p = {**p, **{k: got["plan"][k] for k in ("entry", "stop", "target", "entry_time")}}
     quality = _data_quality(snap, text, p["date"])
     if quality is not None:
         # Clear reasons before the engine runs; the engine itself is unchanged and checks again.

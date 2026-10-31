@@ -139,6 +139,46 @@ def asset_chart(symbol: str, range: Literal["1d", "5d", "1mo", "3mo", "6mo", "1y
     }
 
 
+@router.get("/assets/{symbol}/relative")
+def asset_relative(symbol: str, range: Literal["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y"] = "6mo"):  # noqa: A002
+    """The same series as /chart without a price level, for the public lab (display policy):
+    cumulative return in %, RSI 14, distance to the 20-period average in %, ATR 14 in % of the
+    close and the MACD histogram in % of the close. No OHLC, no volume."""
+    interval = "5m" if range in ("1d", "5d") else "1wk" if range == "5y" else "1d"
+    try:
+        text, fetched, cached = md.fetch_chart_raw(symbol, range, interval)
+        chart = md.parse_chart(text, md.clean_symbol(symbol))
+    except md.DataError as e:
+        return _err(e)
+    closes = [b["close"] for b in chart.bars]
+    highs, lows = [b["high"] for b in chart.bars], [b["low"] for b in chart.bars]
+    sma20, atr14 = ind.sma(closes, 20), ind.atr(highs, lows, closes, 14)
+    _, _, macd_h = ind.macd(closes)
+    base = closes[0] if closes else None
+
+    def pct_of(x: float | None, c: float) -> float | None:
+        return None if x is None or not c else round(100.0 * x / c, 3)
+
+    meta = chart.meta
+    prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+    last = closes[-1] if closes else None
+    return {
+        "symbol": chart.symbol, "name": meta.get("longName") or meta.get("shortName"), "range": range,
+        "interval": interval, "time": [b["time"] for b in chart.bars],
+        "series": {
+            "return_pct": [round(100.0 * (c / base - 1), 3) if base else None for c in closes],
+            "rsi14": [ind.r4(x) for x in ind.rsi(closes, 14)],
+            "dist_sma20_pct": [None if m is None else round(100.0 * (c / m - 1), 3) for c, m in zip(closes, sma20)],
+            "atr14_pct": [pct_of(a, c) for a, c in zip(atr14, closes)],
+            "macd_hist_pct": [pct_of(h, c) for h, c in zip(macd_h, closes)],
+        },
+        "quote": {"change_pct": round((last / prev - 1) * 100, 3) if last and prev else None},
+        "prices_hidden": True,
+        "provenance": md.provenance(chart, fetched, cached, interval),
+        "warnings": ([] if len(chart.bars) >= 20 else ["Poucos candles: indicadores incompletos."]),
+    }
+
+
 @router.get("/quotes")
 def quotes(symbols: str = Query(min_length=1, max_length=400)) -> dict:
     syms = []

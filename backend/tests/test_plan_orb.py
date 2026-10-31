@@ -222,24 +222,106 @@ def public_alpaca(public_default: TestClient,  # noqa: F811
     return public_default, fake
 
 
-def test_public_lab_hides_provider_priced_plans(public_alpaca: tuple[TestClient, fx.FakeAlpaca],
-                                                monkeypatch: pytest.MonkeyPatch) -> None:
+def test_public_lab_shows_provider_plans_in_r(public_alpaca: tuple[TestClient, fx.FakeAlpaca],
+                                              monkeypatch: pytest.MonkeyPatch) -> None:
     c, fake = public_alpaca
     r = c.post("/api/plan/orb", json={**DAY, "target_r": 1})
-    assert r.status_code == 403 and r.json()["detail"]["code"] == "display_policy"
-    assert fake.calls == []                                     # refused before any download
-    # the package's reference file stays usable
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["prices_hidden"] is True and body["triggered"] is True
+    p = body["plan"]
+    assert not {"entry", "stop", "target", "risk_per_share", "stop_detail"} & set(p)
+    assert (p["entry_r"], p["stop_r"], p["target_r"], p["entry_time"]) == (0.0, -1.0, 1.0, "10:15")
+    assert abs(p["stop_pct"] - 100 * (358.32 - 364.18) / 364.18) < 1e-3
+    assert abs(p["target_pct"] - 100 * (370.04 - 364.18) / 364.18) < 1e-3
+    assert "high" not in body["opening_range"] and body["opening_range"]["high_pct"] < 0
+    assert "price" not in body["trigger"] and "close" not in body["trigger"]
+    assert body["plan_rule"]["stop_rule"] == "or_mid"
+    for price in ("364.18", "358.32", "370.04", "362.18", "354.47"):
+        assert price not in r.text, price
+    # the package's reference file keeps its dollars
     snap = _fixture_snapshot(c)
-    ok = c.post("/api/plan/orb", json={"snapshot_id": snap, "date": "2026-10-19", "target_r": 1})
-    assert ok.status_code == 200 and _plan(ok.json()) == REEL
+    ok = c.post("/api/plan/orb", json={"snapshot_id": snap, "date": "2026-10-19", "target_r": 1}).json()
+    assert ok["prices_hidden"] is False and _plan(ok) == REEL
     # switched on explicitly by the operator
     monkeypatch.setenv("DP_SHOW_TRIGGER_PRICES", "true")
     from app import config
     config.get_settings.cache_clear()
     r = c.post("/api/plan/orb", json={**DAY, "target_r": 1})
     assert r.status_code == 200 and _plan(r.json()) == REEL
-    sid = r.json()["snapshot"]["id"]
-    monkeypatch.setenv("DP_SHOW_TRIGGER_PRICES", "false")
-    config.get_settings.cache_clear()
-    r = c.post("/api/plan/orb", json={"snapshot_id": sid, "date": "2026-10-19"})
-    assert r.status_code == 403 and r.json()["detail"]["code"] == "display_policy"
+
+
+def test_public_time_machine_runs_on_the_server_plan_and_shows_r(public_alpaca: tuple[TestClient, fx.FakeAlpaca]) -> None:
+    """The whole public flow: plan rule -> Time Machine on the server -> results, trades, job,
+    list and export in R, with no provider price anywhere in the API."""
+    from .conftest import wait_job
+    c, fake = public_alpaca
+    rule = {"or_minutes": 15, "stop_rule": "or_mid", "target_r": 1}
+    r = c.post("/api/timemachine", json={"symbol": "TSLA", "date": "2026-10-19", "plan_rule": rule,
+                                         "replays": 2000, "seed": 19, "history_sessions": 60})
+    assert r.status_code == 202, r.text
+    r = r.json()
+    j = wait_job(c, r["job"]["id"], headers={})
+    assert j["status"] == "succeeded", j.get("error")
+    e = c.get(f"/api/experiments/{r['experiment_id']}")
+    res = e.json()["results"]
+    assert res["prices_hidden"] is True and res["display_note"]
+    assert res["plan"]["entry_r"] == 0.0 and res["plan"]["stop_r"] == -1.0 and "entry" not in res["plan"]
+    mc = res["mc"]
+    assert mc["unit"] == "R" and "median_close" not in mc and isinstance(mc["median_close_r"], float)
+    assert all(x == 0.0 for x in mc["bands"][0])                   # every band starts at the entry
+    assert all(path[0] == 0.0 for path in mc["sample_paths"])
+    trades = e.json()["trades"]
+    assert trades and all(t["entry"] is None and t["stop"] is None and t["r_multiple"] is not None for t in trades)
+    job = c.get(f"/api/jobs/{r['job']['id']}").json()
+    lst = c.get("/api/experiments").json()
+    csv = c.get(f"/api/experiments/{r['experiment_id']}/export?format=csv").text
+    js = c.get(f"/api/experiments/{r['experiment_id']}/export?format=json").text
+    assert csv.splitlines()[0] == "symbol,source,dataset,entry_date,entry_time,exit_date,outcome,r_multiple"
+    for price in ("364.18", "358.32", "370.04"):
+        for name, text in (("experiment", e.text), ("job", json.dumps(job)), ("list", json.dumps(lst)),
+                           ("csv", csv), ("json", js)):
+            assert price not in text, (name, price)
+
+
+def test_server_plan_gives_the_same_run_as_the_priced_plan(client: TestClient) -> None:
+    """Demo lab, reference file: plan_rule computes 364.18 / 358.32 / 370.04 at 10:15 on the server,
+    so the Monte Carlo is identical to the run with those prices typed in."""
+    from .conftest import wait_job
+    snap = _fixture_snapshot(client, DEMO)
+    base = {"symbol": "TSLA", "date": "2026-10-19", "replays": 2000, "seed": 19, "snapshot_id": snap}
+    a = client.post("/api/timemachine", json={**base, "entry": 364.18, "stop": 358.32, "target": 370.04,
+                                              "entry_time": "10:15"}, headers=DEMO).json()
+    b = client.post("/api/timemachine", json={**base, "plan_rule": {"stop_rule": "or_mid", "target_r": 1}},
+                    headers=DEMO).json()
+    assert wait_job(client, a["job"]["id"])["status"] == "succeeded"
+    assert wait_job(client, b["job"]["id"])["status"] == "succeeded"
+    ra = client.get(f"/api/experiments/{a['experiment_id']}", headers=DEMO).json()["results"]
+    rb = client.get(f"/api/experiments/{b['experiment_id']}", headers=DEMO).json()["results"]
+    assert ra["mc"] == rb["mc"] and ra["history"] == rb["history"]
+    assert (rb["plan"]["entry"], rb["plan"]["stop"], rb["plan"]["target"]) == (364.18, 358.32, 370.04)
+    pb = client.get(f"/api/experiments/{b['experiment_id']}", headers=DEMO).json()["params"]
+    assert "entry" not in pb and pb["plan_rule"]["stop_rule"] == "or_mid"
+
+
+def test_time_machine_request_needs_prices_or_a_rule(client: TestClient) -> None:
+    base = {"symbol": "TSLA", "date": "2026-10-19"}
+    assert client.post("/api/timemachine", json=base, headers=DEMO).status_code == 422
+    both = {**base, "entry": 364.18, "stop": 358.32, "target": 370.04, "entry_time": "10:15",
+            "plan_rule": {"stop_rule": "or_mid"}}
+    assert client.post("/api/timemachine", json=both, headers=DEMO).status_code == 422
+    partial = {**base, "entry": 364.18, "stop": 358.32}
+    assert client.post("/api/timemachine", json=partial, headers=DEMO).status_code == 422
+
+
+def test_server_plan_that_does_not_trigger_fails_with_the_reason(alpaca_api: tuple[TestClient, fx.FakeAlpaca],
+                                                                 monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import alpaca
+
+    from .conftest import wait_job
+    c, _ = alpaca_api
+    monkeypatch.setattr(alpaca, "_now", lambda: fx.edt("2026-10-19", "10:16"))   # data up to 10:00: no trigger yet
+    r = c.post("/api/timemachine", json={"symbol": "TSLA", "date": "2026-10-19", "plan_rule": {},
+                                         "replays": 500}, headers=DEMO).json()
+    j = wait_job(c, r["job"]["id"])
+    assert j["status"] == "failed" and "não disparou" in (j.get("error") or "")

@@ -1,6 +1,6 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query'
 import { FlaskConical, Plus, Rewind, Search, Trash2, X } from 'lucide-react'
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { PageHeader } from '@/components/app/AppShell'
 import { DataTable, type Column } from '@/components/app/DataTable'
@@ -16,7 +16,10 @@ import { EmptyState, ErrorState, Notice, Skeleton, Spinner } from '@/components/
 import { api, ApiError } from '@/lib/api'
 import { fmt, localDateTime, nyDateTime, relative, shortDate } from '@/lib/format'
 import type { Bar, Job, Provenance, Quote, Watchlist } from '@/lib/types'
+import { useDisplayPolicy } from '@/lib/policy'
 import { cn } from '@/lib/utils'
+
+const ReturnChart = lazy(() => import('@/components/charts/charts').then((m) => ({ default: m.ReturnChart })))
 
 const SETUP_LABEL: Record<string, string> = {
   breakout_20d: 'Rompimento 20d',
@@ -162,14 +165,76 @@ const RANGES = [
   { value: '2y', label: '2A' },
 ] as const
 
+type RelativeRes = {
+  symbol: string
+  name: string | null
+  range: string
+  interval: string
+  time: number[]
+  series: Record<'return_pct' | 'rsi14' | 'dist_sma20_pct' | 'atr14_pct' | 'macd_hist_pct', (number | null)[]>
+  quote: { change_pct: number | null }
+  provenance: Provenance
+  warnings: string[]
+}
+
+/** Public lab (prices hidden): return in % since the start of the period and relative indicators. */
+function RelativeDetail({ q }: { q: UseQueryResult<RelativeRes> }) {
+  const d = q.data
+  const last = (xs: (number | null)[] | undefined) => (xs ? ([...xs].reverse().find((x) => x != null) ?? null) : null)
+  return (
+    <div className="mt-3">
+      {q.isLoading ? (
+        <Skeleton className="h-[300px]" />
+      ) : q.isError ? (
+        <ErrorState error={q.error} retry={() => void q.refetch()} />
+      ) : d && d.time.length ? (
+        <Suspense fallback={<Skeleton className="h-[300px]" />}>
+          <ReturnChart time={d.time} values={d.series.return_pct} intraday={d.interval === '5m'} height={300} />
+        </Suspense>
+      ) : (
+        <EmptyState title="Sem dados para este período" />
+      )}
+      {d && (
+        <>
+          <p className="mt-2 text-[11px] leading-relaxed text-faint">
+            Retorno acumulado desde o início do período. Preços e candles não são exibidos neste laboratório público. {d.provenance.source_label} · coletado {localDateTime(d.provenance.fetched_at)}.
+          </p>
+          <dl className="mt-4 grid grid-cols-2 gap-px overflow-hidden rounded-[var(--radius-md)] border border-line bg-line sm:grid-cols-4">
+            {[
+              ['Retorno no período', fmt.signedPct(last(d.series.return_pct))],
+              ['RSI 14', fmt.num(last(d.series.rsi14), 1)],
+              ['Distância da MM20', fmt.signedPct(last(d.series.dist_sma20_pct))],
+              ['ATR 14 (% do preço)', `${fmt.num(last(d.series.atr14_pct), 2)} %`],
+            ].map(([l, v]) => (
+              <div key={l} className="bg-surface p-3">
+                <dt className="text-[11px] text-muted">{l}</dt>
+                <dd className="num mt-0.5 text-[15px] text-fg">{v}</dd>
+              </div>
+            ))}
+          </dl>
+        </>
+      )}
+    </div>
+  )
+}
+
 function AssetDetail({ symbol, watchlists, onClose }: { symbol: string; watchlists: Watchlist[]; onClose: () => void }) {
   const qc = useQueryClient()
   const [range, setRange] = useState<(typeof RANGES)[number]['value']>('6mo')
   const [ma, setMa] = useState(true)
   const [tab, setTab] = useState<'indicators' | 'news' | 'fundamentals'>('indicators')
+  const policy = useDisplayPolicy()
+  // Public lab: no price level on screen, only return in % and relative indicators (display policy).
+  const hidden = policy != null && !policy.show_raw_prices
   const chart = useQuery({
     queryKey: ['chart', symbol, range],
     queryFn: ({ signal }) => api<ChartRes>(`/assets/${symbol}/chart?range=${range}`, { signal }),
+    enabled: policy != null && !hidden,
+  })
+  const rel = useQuery({
+    queryKey: ['relative', symbol, range],
+    queryFn: ({ signal }) => api<RelativeRes>(`/assets/${symbol}/relative?range=${range}`, { signal }),
+    enabled: hidden,
   })
   const news = useQuery({
     queryKey: ['news', symbol],
@@ -215,11 +280,14 @@ function AssetDetail({ symbol, watchlists, onClose }: { symbol: string; watchlis
             <h2 className="num text-2xl text-fg">{symbol}</h2>
             <DataBadge kind="delayed" />
           </div>
-          <p className="truncate text-sm text-muted">{c?.name ?? (chart.isLoading ? 'Carregando…' : '')}</p>
+          <p className="truncate text-sm text-muted">{(hidden ? rel.data?.name : c?.name) ?? (chart.isLoading || rel.isLoading ? 'Carregando…' : '')}</p>
         </div>
         <div className="text-right">
-          <p className="num text-2xl text-fg">{fmt.num(c?.quote.last)}</p>
-          <p className={cn('num text-sm', (c?.quote.change_pct ?? 0) >= 0 ? 'text-up' : 'text-down')}>{fmt.signedPct(c?.quote.change_pct)} vs. fechamento anterior</p>
+          {!hidden && <p className="num text-2xl text-fg">{fmt.num(c?.quote.last)}</p>}
+          {(() => {
+            const chg = hidden ? rel.data?.quote.change_pct : c?.quote.change_pct
+            return <p className={cn('num text-sm', (chg ?? 0) >= 0 ? 'text-up' : 'text-down')}>{fmt.signedPct(chg)} vs. fechamento anterior</p>
+          })()}
         </div>
         <button onClick={onClose} className="rounded-[8px] p-1.5 text-muted hover:bg-raised hover:text-fg sm:hidden" aria-label="Fechar detalhes">
           <X className="size-4" />
@@ -228,13 +296,16 @@ function AssetDetail({ symbol, watchlists, onClose }: { symbol: string; watchlis
 
       <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
         <SegmentedControl label="Período do gráfico" size="sm" value={range} onChange={setRange} options={RANGES.map((r) => ({ value: r.value, label: r.label }))} />
-        <label className="inline-flex items-center gap-2 text-xs text-muted">
-          <input type="checkbox" checked={ma} onChange={(e) => setMa(e.target.checked)} className="accent-[#ff4103]" />
-          Médias móveis 20 e 50
-        </label>
+        {!hidden && (
+          <label className="inline-flex items-center gap-2 text-xs text-muted">
+            <input type="checkbox" checked={ma} onChange={(e) => setMa(e.target.checked)} className="accent-[#ff4103]" />
+            Médias móveis 20 e 50
+          </label>
+        )}
       </div>
 
-      <div className="mt-3">
+      {hidden && <RelativeDetail q={rel} />}
+      {!hidden && <div className="mt-3">
         {chart.isLoading ? (
           <Skeleton className="h-[360px]" />
         ) : chart.isError ? (
@@ -244,7 +315,7 @@ function AssetDetail({ symbol, watchlists, onClose }: { symbol: string; watchlis
         ) : (
           <EmptyState title="Sem candles para este período" />
         )}
-      </div>
+      </div>}
       {c && (
         <p className="mt-2 text-[11px] leading-relaxed text-faint">
           {c.provenance.source_label} · {c.provenance.exchange} · último candle {c.interval === '5m' ? nyDateTime(c.provenance.last_bar_time) : shortDate(c.provenance.last_bar_time)} · coletado {localDateTime(c.provenance.fetched_at)}

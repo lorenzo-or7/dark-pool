@@ -149,13 +149,31 @@ class BacktestRequest(Strict):
 
 # ---------------------------------------------------------------- time machine
 
+class PlanRule(Strict):
+    """The ORB plan as a rule: the server finds entry, stop and target on the plan day's own bars
+    (trader-entry + trader-exit), so the visitor never has to see or send provider prices."""
+    or_minutes: int = Field(default=15, ge=5, le=60)
+    stop_rule: Literal["or_mid", "or_low", "pct", "atr"] = "or_mid"
+    stop_pct: float = Field(default=1.0, gt=0, le=50)
+    atr_k: float = Field(default=1.5, ge=0.25, le=10)
+    target_r: float = Field(default=1.0, ge=0.25, le=10)
+
+    @model_validator(mode="after")
+    def check_grid(self) -> PlanRule:
+        if self.or_minutes % 5:
+            raise ValueError("faixa de abertura em múltiplos de 5 minutos")
+        return self
+
+
 class TimeMachineRequest(Strict):
     symbol: Symbol
     date: dt.date
-    entry: float = Field(gt=0, lt=1e6)
-    stop: float = Field(gt=0, lt=1e6)
-    target: float = Field(gt=0, lt=1e6)
-    entry_time: str
+    # Either the plan in prices (entry, stop, target, entry_time) or plan_rule (computed on the server).
+    entry: float | None = Field(default=None, gt=0, lt=1e6)
+    stop: float | None = Field(default=None, gt=0, lt=1e6)
+    target: float | None = Field(default=None, gt=0, lt=1e6)
+    entry_time: str | None = None
+    plan_rule: PlanRule | None = None
     replays: int = Field(default=10000, ge=100, le=50000)
     seed: int = Field(default=19, ge=0, le=2**31 - 1)
     window: int = Field(default=2, ge=0, le=10)
@@ -188,8 +206,16 @@ class TimeMachineRequest(Strict):
 
     @model_validator(mode="after")
     def check_plan(self) -> TimeMachineRequest:
-        if not self.stop < self.entry < self.target:
-            raise ValueError("compra: o stop deve ficar abaixo da entrada e o alvo acima")
+        prices = (self.entry, self.stop, self.target, self.entry_time)
+        if self.plan_rule is not None:
+            if any(x is not None for x in prices):
+                raise ValueError("envie o plano em preços ou a regra (plan_rule), não os dois")
+            self.or_minutes = self.plan_rule.or_minutes
+        else:
+            if any(x is None for x in prices):
+                raise ValueError("informe entrada, stop, alvo e horário, ou a regra do plano (plan_rule)")
+            if not self.stop < self.entry < self.target:
+                raise ValueError("compra: o stop deve ficar abaixo da entrada e o alvo acima")
         if self.or_minutes % 5:
             raise ValueError("faixa de abertura em múltiplos de 5 minutos")
         if self.date > dt.date.today():

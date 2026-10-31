@@ -207,7 +207,7 @@ Time Machine), congela um snapshot e só então chama os motores. Nenhum motor f
 | Stops | `or_mid`, `or_low`, `pct` e, novo, `atr` com `atr_k` (0,25 a 10, padrão 1,5): K × ATR de 14 candles da sessão até o candle de entrada, pelo leitor e pelo `atr_of` do próprio trader-exit. Com menos de 3 candles fechados até a entrada (só com lacunas no feed), recusa com motivo |
 | Avaliação | No menor entre 16:05 ET e o `regularMarketTime` dos dados. Antes, uma sessão em andamento cujos dados acabam às 10:00 era lida às 16:05 e aparecia como "expired"; agora aparece como "waiting" |
 | Resposta | Plano, faixa, gatilho, `stop_detail`, `reward_risk`, ATR, `snapshot` (com proveniência e feed), `data_quality` (Alpaca), `evaluated_at` e notas |
-| Política | Sem snapshot, ou com snapshot que não seja a referência do pacote: exige `DP_SHOW_TRIGGER_PRICES` (padrão desligado no modo `public`), senão 403 `display_policy` antes de qualquer download. A referência do pacote continua livre |
+| Política | Com `DP_SHOW_TRIGGER_PRICES` desligado (padrão do `public`) e dados que não sejam a referência do pacote, o plano volta em R e % (ver "Exibição em R"), com `plan_rule` para rodar o Time Machine no servidor |
 | Falhas | Provedor desligado/sem chave/pausado → 503; erro da Alpaca → 502 com o código; janela inválida, sem dados ou dia ainda não liberado → 422. Sem troca para o Yahoo |
 
 Limite conhecido: o histórico do Time Machine (`history_replay`) não conhece stop por ATR. Com um
@@ -221,3 +221,25 @@ Testes (`backend/tests/test_plan_orb.py`, fixtures): números de referência da 
 `start` na abertura e `end` = `data_end` − 1 s), snapshot reaproveitado, recálculo pelo snapshot sem
 nova coleta, sessão em andamento como "waiting", recusa do ATR com menos de 3 candles, erros sem
 chaves, validação, Yahoo com o período mais curto e a política do modo público.
+
+---
+
+## Exibição em R no modo público (aprovada em 31/10/2026)
+
+Com `DP_SHOW_TRIGGER_PRICES` desligado (padrão do `public`), nada que venha de preços de um provedor
+sai da API em dólares. O banco guarda os números completos (para reproduzir); a conversão é feita na
+saída por `backend/app/services/price_view.py`. Execuções sobre a referência do pacote (arquivo TSLA
+da skill, MIT) continuam em dólares.
+
+| Onde | O que muda |
+|---|---|
+| `POST /api/plan/orb` | Plano em R e % da entrada (0R, −1R, +xR; `stop_pct`, `target_pct`, `risk_pct`, `atr_pct`), faixa de abertura em % da entrada, gatilho sem preço nem volume, `plan_rule` |
+| `POST /api/timemachine` | Aceita `plan_rule` no lugar de entrada/stop/alvo: o job calcula o plano (trader-entry + trader-exit) no dia do plano dentro do mesmo snapshot. Sem disparo → falha `plan_not_triggered` com o motivo |
+| `GET /api/experiments/{id}` e export JSON/CSV | Plano em R; Monte Carlo (mediana, p5, p95, faixas, caminhos, histograma) em R (`mc.unit = "R"`); trades sem preços (só R, datas, resultado); avisos do motor que citam preços são omitidos; CSV sem colunas de preço |
+| `GET /api/experiments`, `GET /api/jobs/{id}` | `params` sem entrada/stop/alvo |
+| `GET /api/assets/{s}/relative` (novo) | Para o Scanner: retorno acumulado em %, RSI 14, distância da MM20 em %, ATR 14 e histograma do MACD em % do preço. Sem OHLC nem volume |
+| Frontend | Time Machine: "Plano calculado e guardado no servidor", leque e histograma em R, tabela sem colunas de preço, dimensionamento oculto. Scanner: gráfico de retorno % no lugar dos candles quando `DP_SHOW_RAW_PRICES` está desligado. Dashboard: o minigráfico já saía no Bloco 2 |
+
+Testes: `backend/tests/test_price_view.py` e `test_plan_orb.py` (fluxo público completo: plano →
+Time Machine pela regra → experimento, trades, job, lista e exports sem nenhum preço do provedor;
+mesma simulação pela regra e pelos preços digitados).

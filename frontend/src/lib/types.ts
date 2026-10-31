@@ -130,9 +130,15 @@ export type MonteCarlo = {
   p_stop: number
   p_neither: number
   p_green: number
-  median_close: number
-  p5_close: number
-  p95_close: number
+  /** in dollars; absent when the public lab hides provider prices (then the *_r fields) */
+  median_close?: number
+  p5_close?: number
+  p95_close?: number
+  median_close_r?: number
+  p5_close_r?: number
+  p95_close_r?: number
+  /** "R" when bands, sample paths and the histogram are in R */
+  unit?: 'R'
   avg_R: number
   r_at_target: number
   bands: number[][]

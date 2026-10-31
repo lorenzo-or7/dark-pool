@@ -44,17 +44,6 @@ def require_raw_prices() -> None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, {"code": "display_policy", "message": HIDDEN_MESSAGE})
 
 
-TRIGGER_HIDDEN_MESSAGE = ("O preço do gatilho (entrada, stop e alvo calculados sobre dados do provedor) não é "
-                          "exibido neste laboratório público até a confirmação dos termos do provedor. O plano de "
-                          "referência do pacote continua disponível.")
-
-
-def require_trigger_prices() -> None:
-    """Signals priced from a data provider's bars (the ORB plan's entry, stop and target)."""
-    if not get_settings().show_trigger_prices:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, {"code": "display_policy", "message": TRIGGER_HIDDEN_MESSAGE})
-
-
 def redact_quote(q: dict) -> dict:
     if get_settings().show_raw_prices:
         return q

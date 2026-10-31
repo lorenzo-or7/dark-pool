@@ -40,34 +40,9 @@ A FAQ oficial da Alpaca (https://docs.alpaca.markets/us/docs/market-data-faq) di
 - A correção 2 abaixo (volume IEX no Scanner) deixa de bloquear o Bloco 6: com SIP, o volume é o consolidado. Barras diárias podem migrar para a Alpaca SIP no Bloco 6, com comparação contra o Yahoo antes de trocar.
 - Se o teste real recusar o SIP (`provider_subscription`), `DP_ALPACA_FEED=iex` volta ao comportamento anterior.
 
-### BLOQUEIO antes de pôr as chaves da Alpaca no Render (modo `public`)
+### Exibição em R no modo público — resolvido em 31/10 (antes era bloqueio)
 
-Os resultados de experimentos não passam pela política de exibição: o histórico do Time Machine (`results.history.trades`) e os trades dos backtests ORB trazem entrada, stop e alvo em dólares de cada sessão passada. Hoje, no `public`, o Yahoo vem desligado e esses números vêm só da referência do pacote. Com a Alpaca ligada, passam a ser preços derivados do provedor, mostrados a visitantes anônimos, o que é exatamente o que `DP_SHOW_TRIGGER_PRICES` deveria impedir. A proposta de gráficos em R (abaixo) resolve isso; precisa de aprovação. O `POST /api/plan/orb` já respeita `DP_SHOW_TRIGGER_PRICES` desde o Bloco 4 (exceto para a referência do pacote).
-
-### O que já existe (Blocos 1 e 2)
-
-**Bloco 1 — Calendário**
-- `backend/app/services/market_calendar.py`: `exchange_calendars==4.13.2` (Apache-2.0), calendário XNYS de 2016 até três anos à frente, montado na primeira consulta.
-- `GET /api/market/calendar?date=` (sem preços) e campo `calendar` no `/api/health`.
-- `POST /api/timemachine` e `POST /api/plan/orb` recusam com 422 um dia sem pregão (`market_closed`) ou fora de 2026–2027 (`calendar_out_of_range`), porque os motores só conhecem o calendário desses anos. Os motores não foram editados.
-- `backend/tests/test_calendar.py`: compara o calendário com a tabela oficial da NYSE de 2026–2027 e com a tabela embutida nos seis motores; falha quando o ano passar de 2027.
-
-**Bloco 2 — Política, cotas e proveniência**
-- `backend/app/services/policy.py`: `DP_SHOW_RAW_PRICES`, `DP_SHOW_TRIGGER_PRICES`, `DP_PELOSI_PUBLIC`, `DP_ALLOW_UNOFFICIAL_SOURCES`. Linha em branco = padrão do modo (tudo visível no `demo`; restritivo no `public`).
-  - Preços ocultos: `/api/assets/{s}/chart` e `/api/snapshots/{id}/bars` dão 403 `display_policy`; `/api/quotes` sem `last`, `volume`, `avg_volume` e `spark`; varreduras sem `price` e `volume`.
-  - Yahoo desligado: 503 `source_disabled` em gráficos, cotações, notícias, varreduras e Time Machine/backtest sem snapshot. Snapshots salvos continuam utilizáveis.
-  - `DP_SHOW_TRIGGER_PRICES` **ainda não tem efeito nas rotas** (depende da proposta de gráficos abaixo).
-- `backend/app/services/providers.py`: registro de provedores, limite por minuto e por dia, circuit breaker (429 pausa 120 s; três falhas pausam 30 s), single-flight, `provenance_for_source()` e `status()`. Estado em memória do processo.
-- `market_data.fetch_chart_raw` (Yahoo) passa por política, cota e single-flight. Chamadas que os motores fazem sozinhos (scanner, news, analyst, universo) são cobradas por estimativa antes de rodar.
-- Resultados de experimentos têm `results.snapshot.provenance`; o hash do snapshot continua sendo o do conteúdo.
-- Configurações mostra **Política de exibição** e **Fontes de dados** (estado, uso de cota, termos), sem chaves.
-- `.env.example` documenta `ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY` e as quatro chaves da política; `render.yaml` declara as chaves da Alpaca com `sync: false`.
-- `scripts/check_alpaca.py`: teste de fumaça das chaves (só leitura; lê `backend/.env`; nunca imprime as chaves).
-- `docs/INTEGRACOES.md`: registro de cada integração (origem, entradas, saídas, frequência, persistência, limites, falhas, testes).
-
-**Testes ao fim do Bloco 2 (rodados numa cópia Linux, não no Windows do usuário):**
-backend 82 passed, 9 skipped; `test_public_pg.py` com Postgres local 9 passed; motores da skill 242 passed + 1 que dependia de um arquivo não copiado (`trader-alerts/alerts.example.json`); frontend: `tsc` sem erros, 12 testes, build ok; lint com 3 avisos antigos.
-Testes com Postgres: `DP_TEST_PG_URL=postgresql://postgres@127.0.0.1:PORTA/postgres` (servidor descartável, nunca o Supabase).
+Proposta de gráficos aprovada pelo usuário em 31/10 e implementada na branch `bloco4-entry-exit`: com `DP_SHOW_TRIGGER_PRICES` desligado, planos, Time Machine, backtests, trades, jobs e exports saem em R e %; o plano fica no servidor (`plan_rule`); o Scanner usa `/api/assets/{s}/relative`. Detalhes em `docs/INTEGRACOES.md`.
 
 ### Pendências do usuário antes do Bloco 3 funcionar com dados reais
 
@@ -76,16 +51,16 @@ Testes com Postgres: `DP_TEST_PG_URL=postgresql://postgres@127.0.0.1:PORTA/postg
 - [ ] Rodar `backend\.venv\Scripts\python.exe scripts\check_alpaca.py` e informar, para `[SIP]` e `[IEX]`, a linha `OK: N barras ... (volume somado X)` ou `Falhou: ...`, e a linha `Confere: t é o início da barra` (ou `ATENÇÃO`).
 - [x] `tests\alpaca_script.py` removido em 30/10 (cópia redundante de `scripts\check_alpaca.py`, sem chaves; a primeira linha já não estava corrompida).
 - [ ] `SEC_USER_AGENT`: não havia `.env` com esse valor. Confirmar onde está configurado ou pedir nome e e-mail do projeto.
-- [ ] Aprovar ou ajustar a **proposta de gráficos do modo público** (abaixo).
+- [x] Proposta de gráficos do modo público aprovada e implementada (31/10).
 
-### Proposta de gráficos aguardando aprovação
+### Proposta de gráficos (aprovada e implementada em 31/10)
 
 No modo `public` (no `demo` os candles continuam):
 1. **Time Machine:** replay desenhado em R (0 na entrada, −1R no stop, +xR no alvo), sem eixo de preço. O plano ORB fica guardado no servidor e a tela mostra entrada, stop e alvo em R e em %. Isso permite ativar `DP_SHOW_TRIGGER_PRICES` sem quebrar o fluxo, que hoje envia entrada, stop e alvo em dólares.
 2. **Scanner:** retorno acumulado em % e indicadores relativos (RSI, distância da MM20 em %, ATR em %) no lugar dos candles.
 3. **Dashboard:** mantém variação do dia e volatilidade; sai o minigráfico de preço.
 
-Não implemente sem aprovação.
+Implementada em 31/10.
 
 ---
 
@@ -197,7 +172,7 @@ Um bloco por vez. Pare e entregue o relatório de cada bloco antes do próximo, 
 2. ~~Política de exibição, proveniência e cotas~~ (concluído)
 3. ~~Adaptador Alpaca + Time Machine~~ (no GitHub; feed SIP na branch `bloco4-entry-exit`)
 4. ~~Entry e Exit (barras do dia; ATR da sessão)~~ (branch `bloco4-entry-exit`)
-5. **Alerts: cotação de vários símbolos por requisição; remover o Stooq** ← retomar aqui, depois do bloqueio de exibição
+5. **Alerts: cotação de vários símbolos por requisição; remover o Stooq** ← retomar aqui
 6. Scanner: diário e ORB, com a recalibração de volume aprovada
 7. News: SEC 8-K + GDELT; desligar o RSS do Yahoo em produção
 8. Universo: metadados da SEC (CIK, bolsa, SIC como setor, após confirmar na documentação); market cap só interno; float fora
