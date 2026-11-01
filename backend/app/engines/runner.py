@@ -32,6 +32,7 @@ SCRIPTS = {
     "news": ("trader-news", "news"),
     "analyst": ("trader-analyst", "facts"),
     "alerts": ("trader-alerts", "alerts"),
+    "pelosi": ("trader-pelosi", "ptr"),
 }
 
 
