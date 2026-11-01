@@ -12,6 +12,7 @@ const StrategyWizard = lazy(() => import('@/pages/app/StrategyWizard'))
 const TimeMachine = lazy(() => import('@/pages/app/TimeMachine'))
 const Analytics = lazy(() => import('@/pages/app/Analytics'))
 const Journal = lazy(() => import('@/pages/app/Journal'))
+const Congress = lazy(() => import('@/pages/app/Congress'))
 const Settings = lazy(() => import('@/pages/app/Settings'))
 const NotFound = lazy(() => import('@/pages/NotFound'))
 
@@ -40,6 +41,7 @@ export default function App() {
           <Route path="time-machine" element={<Suspense fallback={fallback}><TimeMachine /></Suspense>} />
           <Route path="analytics" element={<Suspense fallback={fallback}><Analytics /></Suspense>} />
           <Route path="journal" element={<Suspense fallback={fallback}><Journal /></Suspense>} />
+          <Route path="congress" element={<Suspense fallback={fallback}><Congress /></Suspense>} />
           <Route path="settings" element={<Suspense fallback={fallback}><Settings /></Suspense>} />
           <Route path="*" element={<Suspense fallback={fallback}><NotFound /></Suspense>} />
         </Route>

@@ -33,6 +33,9 @@ def summary() -> dict:
         "show_raw_prices": s.show_raw_prices,
         "show_trigger_prices": s.show_trigger_prices,
         "pelosi_public": s.dp_pelosi_public,
+        # What /api/congress actually answers: always in the local demo, in the public lab only
+        # with DP_PELOSI_PUBLIC=true (same rule as services/congress.allowed()).
+        "pelosi_shown": (not s.is_public) or s.dp_pelosi_public,
         "allow_unofficial_sources": s.allow_unofficial_sources,
         "mode": s.dp_auth_mode,
         "note": None if s.show_raw_prices else HIDDEN_MESSAGE,

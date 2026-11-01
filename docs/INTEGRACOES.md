@@ -387,3 +387,43 @@ Consumo: até 3 chamadas à SEC por empresa a cada 12 h (facts, submissions, ind
 Testes (`backend/tests/test_analyst_api.py`, arquivos salvos da SEC na skill): resultado, filings,
 mudanças e aviso idênticos aos da linha de comando do motor offline (AAPL e KO); histórico de 8-Ks
 2.02 igual ao das submissões e sem estimativa de data; cache sem novas chamadas; erros 404, 422 e 424.
+
+---
+
+## Pelosi: PTRs da Câmara pela House Clerk (Bloco 10)
+
+`GET /api/congress/ptrs?year=&member=&since=&limit=` e `GET /api/congress/ptrs/{doc_id}?year=&filed=`
+(`services/congress.py`, `routers/congress.py`). O trader-pelosi não foi editado: o servidor baixa os
+arquivos públicos pela cota `house_clerk` e entrega os bytes e o texto às funções do próprio motor
+(`read_index_bytes`, `parse_index`, `select`, `pdf_to_text`, `parse_ptr_text`).
+
+| Item | Valor |
+|---|---|
+| Índice | `https://disclosures-clerk.house.gov/public_disc/financial-pdfs/<ANO>FD.zip` (URL do motor, `INDEX_URL`). Cache em disco por 6 h (`DP_DATA_DIR/cache/house_clerk/<ANO>FD.zip`); arquivo inválido é apagado |
+| PTR | `https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/<ANO>/<DocID>.pdf` (`PTR_URL`). Cache permanente (documento entregue não muda). Só é guardado se começar com `%PDF` (mesma checagem do motor em `_fetch_and_read`) |
+| Texto | `pdftotext -layout` (poppler) pelo `pdf_to_text` do motor. Sem o programa: resposta com `readable=false`, `rows=null`, datas e link do PDF, e um aviso |
+| Datas | `date` = operação; `notified` = aviso ao parlamentar; `filed` = data do documento (do índice ou da assinatura do PDF); `collected_at` = coleta pelo laboratório. `days_to_disclose` e `late` (> 45 dias) vêm do motor |
+| Valores | Faixas do formulário (`amount`, `amount_low`, `amount_high`); nenhum preço de provedor |
+| Senado | Não coberto: bloco `senate` com link para https://efdsearch.senate.gov/search/; o aceite do termo não é automatizado |
+| Política | No `public`, 403 `display_policy` antes de qualquer download, salvo `DP_PELOSI_PUBLIC=true` (aguarda o parecer sobre a 5 U.S.C. §13107(c)). No demo local, sempre visível. `display_policy.pelosi_shown` diz o que a API realmente responde |
+| Cota | Provedor `house_clerk` (oficial): local 6/min e 300/dia (limite publicado: não encontrado). Downloads iguais simultâneos viram um só (`single_flight`) |
+| Erros | DocID inválido 400; arquivo inexistente na House Clerk 404; HTTP ≠ 200 ou arquivo inválido 502; rede 502; cota/pausa 503 |
+| Frontend | Página "Congresso" (`/app/congress`, menu Pesquisa): lista de PTRs (parlamentar, documento, data do documento, PDF) e detalhe (data da operação, tipo, ativo/ticker, titular, faixa, dias até divulgar, "atrasado"); aviso da política e do Senado |
+
+Consumo: 1 download do índice por ano a cada 6 h; 1 download por PTR, uma única vez.
+
+**Render:** os runtimes nativos rodam Debian 12 com um conjunto fixo de ferramentas; o que não está
+incluído exige o runtime Docker (https://render.com/docs/native-environments). Não está confirmado se
+o `pdftotext` existe no runtime Python do Render. Teste real: abrir um PTR em produção e ver
+`readable`. Se vier `false`, as opções são migrar o serviço para Docker com `poppler-utils` ou manter
+só o link do PDF.
+
+Testes (`backend/tests/test_congress_api.py`, arquivos da skill em `tests/fixtures/trader-pelosi`:
+`2026FD.zip`, trecho do índice real, e textos `pdftotext -layout` de PTRs reais; os PDFs são
+substitutos FALSOS com só o cabeçalho `%PDF`, marcados no teste): índice igual ao da linha de comando
+do motor (`ptr.py index --offline ... --json`) mais `collected_at`; linhas iguais às de
+`parse_ptr_text(texto, filed)` nos quatro textos; cache de 6 h e permanente; `since` e `limit`;
+sem pdftotext (o `pdf_to_text` real com o PATH sem o programa); DocID inválido; 404, 500, rede,
+arquivo inválido; cota por minuto; downloads simultâneos; modo público desligado (403, sem download)
+e ligado com `DP_PELOSI_PUBLIC=true`. Frontend: `Congress.test.tsx` e o e2e (página no público
+mostra a política e a API responde 403).

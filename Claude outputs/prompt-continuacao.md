@@ -1,4 +1,4 @@
-# Prompt de continuação — DARK POOL (estado de 01/11/2026, 19h45)
+# Prompt de continuação — DARK POOL (estado de 01/11/2026, 20h10)
 
 > Cole este prompt no agente de código da outra conta, com acesso ao repositório
 > https://github.com/lorenzo-or7/dark-pool (ou ao checkout local do usuário). Este arquivo está na branch
@@ -11,7 +11,7 @@ ações dos EUA: FastAPI no Render, React/Vite na Vercel, Supabase). Antes de qu
 1. O ANEXO no fim deste arquivo — papel, regras, arquitetura, provedores, pendências e o formato do relatório de cada
    bloco ("ENTREGA DE CADA BLOCO").
 2. `docs/INTEGRACOES.md` no repositório — registro de cada integração (fontes, URLs, limites, testes). As seções do fim
-   cobrem 31/10 e 01/11.
+   cobrem 31/10 e 01/11 (Blocos 4 a 10).
 
 Regras que o usuário reforçou: um bloco por vez; ao fim de cada bloco rode TODAS as suítes; os motores em
 `backend/vendor/day_trader_skill` não são editados; sem push nem deploy sem autorização (o usuário autorizou
@@ -37,15 +37,33 @@ Commits da branch (do mais antigo ao mais novo):
 | `5d63690` | Bloco 7: notícias pela SEC 8-K e GDELT (manchetes + tom); RSS do Yahoo só onde fontes não oficiais são permitidas |
 | `11b3246` | Bloco 8: perfil SEC por ativo (`GET /api/assets/{s}/profile`: CIK, bolsas, SIC, setor pela divisão SIC) |
 | `31fa928` | Remove o prompt de continuação do repositório (guardado no projeto do Claude) |
-| `711a2e3` | Bloco 9: Analyst pela SEC com o fetcher do servidor (cache em disco) e histórico de divulgação (8-K item 2.02, sem estimar datas); corrige a rota de fundamentos, que quebrava; aba "Resultados (SEC)" em tabela |
+| `711a2e3` | Bloco 9: Analyst pela SEC com o fetcher do servidor (cache em disco) e histórico de divulgação (8-K item 2.02, sem estimar datas); corrige a rota de fundamentos; aba "Resultados (SEC)" em tabela |
+| `d91e319` | Bloco 10 em andamento: backend inicial dos PTRs da Câmara (House Clerk) |
+| (último) | Bloco 10 concluído: testes, página "Congresso", `pelosi_shown` na política, PDF validado e downloads deduplicados, documentação |
 
-Testes no fim do Bloco 9 (Linux): backend 434 passed, 10 skipped (inclui os testes originais da skill);
-`test_public_pg.py` com Postgres local 9 passed; motores da skill ok; frontend typecheck ok, 13 testes, build ok,
-lint com 21 avisos antigos (nenhum novo); Playwright 12 passed, 6 skipped.
+## Bloco 10 (Pelosi) — CONCLUÍDO no último commit
 
-Tudo foi testado só com fixtures (arquivos salvos da skill, fixtures derivadas e respostas escritas à mão, sempre
-identificadas). O ambiente de nuvem usado não alcançava `data.alpaca.markets`, Yahoo, SEC nem GDELT (proxy 403):
-testes reais só no computador do usuário.
+- Backend: `services/congress.py` + `routers/congress.py` (`GET /api/congress/ptrs` e `/api/congress/ptrs/{doc_id}`).
+  Ajustes do fechamento: o PDF só entra no cache se começar com `%PDF` (mesma checagem do motor) e downloads
+  iguais simultâneos viram um só (`providers.single_flight`). `display_policy.pelosi_shown` (novo) diz o que a API
+  realmente responde: sempre no demo; no público só com `DP_PELOSI_PUBLIC=true`.
+- Testes: `backend/tests/test_congress_api.py` (19 testes; oráculos = linha de comando do motor e `parse_ptr_text`;
+  PDFs são substitutos falsos marcados; cache, `since`/`limit`, sem pdftotext, 400/404/500/rede/arquivo inválido,
+  cota, concorrência, público desligado e ligado).
+- Frontend: `frontend/src/pages/app/Congress.tsx` (rota `/app/congress`, menu Pesquisa e "Mais" no celular),
+  `Congress.test.tsx`, e2e da página no modo público; Configurações usa `pelosi_shown`. Conferência visual feita
+  (desktop e celular, sem rolagem horizontal da página).
+- Documentação: seção "Pelosi: PTRs da Câmara pela House Clerk (Bloco 10)" em `docs/INTEGRACOES.md`;
+  `VENDORED.md` atualizado (só o texto; motor intacto).
+
+Testes no fim do Bloco 10 (Linux, 01/11/2026): backend 453 passed, 10 skipped; `test_public_pg.py` com Postgres 16
+local 9 passed; frontend typecheck ok, 15 testes, build ok, lint 21 avisos antigos (nenhum novo); Playwright
+14 passed, 6 skipped. Tudo só com fixtures: o ambiente de nuvem não alcança a House Clerk, a Alpaca, a SEC nem o GDELT.
+
+Pendência específica do Bloco 10: não está confirmado se o runtime Python nativo do Render tem `pdftotext`
+(https://render.com/docs/native-environments: ferramentas fora da lista exigem Docker). Teste real: abrir um PTR em
+produção e ver `readable`. Se vier `false`: migrar para Docker com `poppler-utils` ou manter só o link do PDF —
+decisão do usuário.
 
 ## Comandos de teste
 
@@ -54,6 +72,7 @@ backend\.venv\Scripts\python.exe -m pytest backend
 npm --prefix frontend run typecheck
 npm --prefix frontend test
 npm --prefix frontend run build
+npm --prefix frontend run lint
 npm --prefix frontend run test:e2e
 ```
 E `test_public_pg.py` com `DP_TEST_PG_URL=postgresql://postgres@127.0.0.1:PORTA/postgres` (Postgres descartável,
@@ -67,54 +86,31 @@ nunca o Supabase). No Linux: `python -m pytest backend`; para o Playwright com u
       de snapshots, que a documentação não mostra). Depois `DP_LIVE_ALPACA=1` no pytest.
 - [ ] `SEC_USER_AGENT` ("Nome email") em `backend\.env` e no Render. Sem ele ficam desligados: 8-K, GDELT
       (o nome da empresa vem da SEC), perfil SEC e Analyst. Pergunte ao usuário; não invente.
-- [ ] Confirmar no teste real: campos do GDELT DOC 2.0 (a página de referência não abriu no ambiente) e os campos
-      `sic`/`sicDescription` das submissões da SEC (o arquivo salvo na skill é um trecho).
+- [ ] Confirmar no teste real: campos do GDELT DOC 2.0, campos `sic`/`sicDescription` das submissões da SEC,
+      índice e PDFs reais da House Clerk (rodar o demo local e abrir `/app/congress`) e `pdftotext` no Render.
 - [ ] Pendências externas de termos (Alpaca em site público; parecer jurídico do Pelosi): ver o ANEXO ("PENDÊNCIAS EXTERNAS").
 
-## Onde retomar: Bloco 10 (Pelosi) EM ANDAMENTO
+## Onde retomar: revisão final (todos os blocos de integração feitos)
 
-O último commit da branch ("Bloco 10 em andamento") traz o backend inicial, ainda SEM testes, SEM frontend e SEM
-documentação. A suíte do backend continuou passando (434 passed, 10 skipped) com esse código. Já existe:
-- `backend/app/services/congress.py`: índice `<ANO>FD.zip` da House Clerk (cache de 6 h, cota do provedor
-  `house_clerk`), PDF do PTR (cache permanente), texto pelo `pdf_to_text` do motor (precisa do `pdftotext`/poppler;
-  sem ele devolve o registro, as datas e o link do PDF com aviso) e linhas pelo `parse_ptr_text` do motor. Datas
-  separadas: `date` (operação), `notified`, `filed` (documento) e `collected_at` (coleta). Bloco `senate`
-  "não coberto" com link para o eFD. Desligado no modo `public` (403 `display_policy`) se `DP_PELOSI_PUBLIC` não
-  for `true`; ligado no demo local.
-- `backend/app/routers/congress.py`: `GET /api/congress/ptrs?year=&member=&since=&limit=` e
-  `GET /api/congress/ptrs/{doc_id}?year=&filed=`; registrado em `main.py`.
-- Provedor `house_clerk` em `providers.py` (oficial, cota local 6/min e 300/dia); motor `pelosi` no `runner.py` e no `/api/health`.
+Não há bloco de código pendente na ordem de integração. Próximos passos, um de cada vez, sempre perguntando ao usuário:
+1. Testes reais no computador do usuário (Windows, checkout `C:\Users\lmors\OneDrive\Documentos\GitHub\dark-pool`):
+   `git pull` na branch, rodar todas as suítes, depois `scripts\check_alpaca.py` com as chaves novas e o demo local
+   (`/app/congress`, notícias, perfil SEC, Analyst) com `SEC_USER_AGENT` configurado. Registrar os resultados reais
+   em `docs/INTEGRACOES.md`, separados dos testes com fixtures. Corrigir só o que o teste real mostrar.
+2. Revisar com o usuário o pull request da branch `bloco4-entry-exit` para a `main` (descrição com o resumo dos
+   Blocos 4 a 10, testes e pendências). Não fazer merge nem deploy sem autorização.
+3. Pendências externas de termos antes de publicar (Alpaca, parecer do Pelosi) e a decisão sobre o `pdftotext`.
 
-Falta, nesta ordem:
-1. Testes `backend/tests/test_congress_api.py` com as fixtures reais da skill
-   (`backend/vendor/day_trader_skill/tests/fixtures/trader-pelosi/`: `2026FD.zip` e os textos `ptr-*.txt`, que são
-   saída do `pdftotext -layout`). Troque `congress._http_get` e `congress._pdf_text` por falsos. Oráculos: o índice
-   deve ser igual ao da linha de comando do motor
-   (`ptr.py index --year 2026 --member pelosi --offline .../2026FD.zip --json`) mais `collected_at`, e as linhas
-   iguais às de `parse_ptr_text(texto, filed)`. Cubra: cache do índice (sem novo download), filtro `since`, PDF ilegível
-   sem pdftotext, DocID inválido (400), 404 da House Clerk, modo público desligado (403, sem download) e ligado com
-   `DP_PELOSI_PUBLIC=true`, e o bloco `senate`.
-2. Frontend: página "Congresso" (rota em `frontend/src/App.tsx`, item no menu em
-   `frontend/src/components/app/AppShell.tsx`) com a lista de PTRs (parlamentar, documento, data do documento, link do
-   PDF) e o detalhe (operações com data, tipo, ativo/ticker, faixa de valor, dias até divulgar, "atrasado"). Mostre a
-   política (`useDisplayPolicy` em `frontend/src/lib/policy.ts`, campo `pelosi_public`) e o aviso de que o Senado não
-   é coberto.
-3. Seção do Bloco 10 em `docs/INTEGRACOES.md` (fontes, cache, datas, política, limitação do pdftotext no Render).
-4. Rodar TODAS as suítes, commit e push na branch.
-
-Depois do Bloco 10: revisar com o usuário o pull request da branch, os testes reais (chaves da Alpaca e
-`SEC_USER_AGENT`) e as pendências externas de termos antes de publicar.
-
-Ao fim de cada bloco: rode todas as suítes, atualize `docs/INTEGRACOES.md`, faça commit na branch
+Ao fim de cada etapa: rode todas as suítes, atualize `docs/INTEGRACOES.md`, faça commit na branch
 `bloco4-entry-exit` e entregue o relatório. Prompts e documentos de contexto para o Claude não vão para o
 repositório, exceto este arquivo, que o usuário pediu para deixar em `Claude outputs/prompt-continuacao.md`
-(atualize-o ao fim de cada bloco).
+(atualize-o ao fim de cada etapa).
 
 ---
 
 # ANEXO — Contexto da integração dos provedores gratuitos no DARK POOL
 
-> Estado atualizado em 01/11/2026: Blocos 1 a 9 feitos; os 4 a 9 e a exibição em R estão na branch `bloco4-entry-exit`. Bloco 10 em andamento (ver o início deste arquivo).
+> Estado atualizado em 01/11/2026, 20h10: Blocos 1 a 10 feitos; os 4 a 10 e a exibição em R estão na branch `bloco4-entry-exit`. Falta a revisão final com testes reais (ver o início deste arquivo).
 > Para o agente de código (Claude) que vai continuar o trabalho, com acesso ao checkout local do DARK POOL.
 > As seções "ESTADO ATUAL" e "BLOCO 3" abaixo são o registro de 31/10; o estado de cada bloco está em "ORDEM DE INTEGRAÇÃO" e em `docs/INTEGRACOES.md`.
 
@@ -145,7 +141,7 @@ Leia o código antes de alterar. Não presuma que algo existe porque está descr
 | 2. Política de exibição, cotas e proveniência | Concluído, no GitHub (`9affb62`) |
 | 3. Alpaca + Time Machine | No GitHub (`695bccd`). Revisado em 31/10: feed SIP como padrão (`DP_ALPACA_FEED`), branch `bloco4-entry-exit`. Testado só com fixtures; teste real pendente |
 | 4. Entry e Exit | Implementado na branch `bloco4-entry-exit`: `POST /api/plan/orb` sem snapshot baixa só o dia; stop `atr:K`. Testado só com fixtures. Ver `docs/INTEGRACOES.md` |
-| 5 a 10 | Não iniciados |
+| 5 a 10 | Feitos em 31/10 e 01/11 na branch `bloco4-entry-exit` (ver docs/INTEGRACOES.md) |
 
 #### Mudança de premissa (31/10): SIP no plano gratuito
 
@@ -291,7 +287,7 @@ Um bloco por vez. Pare e entregue o relatório de cada bloco antes do próximo, 
 7. ~~News: SEC 8-K + GDELT; desligar o RSS do Yahoo em produção~~ (branch `bloco4-entry-exit`)
 8. ~~Universo: metadados da SEC~~ (branch `bloco4-entry-exit`; perfil por ativo) (CIK, bolsa, SIC como setor, após confirmar na documentação); market cap só interno; float fora
 9. ~~Analyst: manter SEC; "próximo resultado" só como histórico do item 2.02 dos 8-K~~ (branch `bloco4-entry-exit`)
-10. **Pelosi: House Clerk com a página pública desligada até o parecer jurídico** ← retomar aqui
+10. **Pelosi: House Clerk com a página pública desligada até o parecer jurídico** (branch `bloco4-entry-exit`; concluído em 01/11)
 
 O Yahoo só sai de cada módulo depois que o substituto passar nos testes.
 

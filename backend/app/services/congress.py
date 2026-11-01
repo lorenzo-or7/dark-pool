@@ -71,6 +71,11 @@ def _http_get(url: str) -> httpx.Response:
 
 
 def _download(url: str) -> bytes:
+    """One shared download per URL (single flight), through the house_clerk quota."""
+    return providers.single_flight((PID, url), lambda: _download_once(url))
+
+
+def _download_once(url: str) -> bytes:
     try:
         providers.acquire(PID)
     except providers.ProviderUnavailable as e:
@@ -123,7 +128,10 @@ def report(doc_id: str, year: int, filed: str | None = None) -> dict:
     f = _cache(f"{year}-{doc_id}.pdf")
     cached = f.exists()
     if not cached:
-        f.write_bytes(_download(url))
+        data = _download(url)
+        if not data.startswith(b"%PDF"):          # the engine's own check in _fetch_and_read
+            raise CongressError("bad_payload", "A House Clerk não devolveu um PDF para esse DocID.")
+        f.write_bytes(data)
     collected = dt.datetime.fromtimestamp(f.stat().st_mtime, dt.UTC).isoformat()
     text = _pdf_text(f)
     out = {"doc_id": doc_id, "year": year, "pdf_url": url, "collected_at": collected, "from_cache": cached,
