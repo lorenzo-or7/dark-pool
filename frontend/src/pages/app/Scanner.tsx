@@ -618,7 +618,7 @@ function ScanPanel({ watchlists, onPick, picked }: { watchlists: Watchlist[]; on
             ]}
           />
           {mode === 'orb' && (
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-[100px_minmax(140px,1fr)_minmax(110px,1fr)] gap-2">
               <Field label="Faixa">
                 {(p) => (
                   <Select {...p} value={orMinutes} onChange={(e) => setOrMinutes(Number(e.target.value))}>
