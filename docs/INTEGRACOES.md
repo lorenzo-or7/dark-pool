@@ -361,3 +361,29 @@ Testes (`backend/tests/test_sec_profile.py`): perfil a partir dos arquivos salvo
 com os campos ausentes do trecho ACRESCENTADOS À MÃO e marcados; cache em disco sem filings e sem
 nova chamada; símbolo desconhecido; erro da SEC; sem User-Agent; tabela de divisões SIC, incluindo
 os limites e as faixas sem divisão.
+
+---
+
+## Analyst: resultados reportados à SEC e histórico de divulgação (Bloco 9)
+
+`GET /api/assets/{s}/fundamentals?quarters=6` (2 a 12; `services/analyst.py`). O trader-analyst não
+foi editado: o servidor chama as funções puras do motor (`ticker_ciks`, `analyse`, `latest_filings`,
+`changes`, `stale_note`) com o próprio fetcher, que manda cada requisição pela cota da SEC com o
+`SEC_USER_AGENT` e guarda as respostas em disco (`DP_DATA_DIR/cache/sec_analyst`): companyfacts e
+submissions por 12 h, o `index.json` de um filing por 30 dias (documento arquivado não muda), a lista
+de tickers 1 vez por dia. Antes a rota rodava o motor como subprocesso e devolvia `{**lista}`, que
+quebrava (o motor imprime uma lista); isso foi corrigido, e o subprocesso inline saiu do router.
+
+| Item | Valor |
+|---|---|
+| Fontes | `https://data.sec.gov/api/xbrl/companyfacts/CIK##########.json`, `https://data.sec.gov/submissions/CIK##########.json`, `https://www.sec.gov/Archives/edgar/data/<cik>/<accession>/index.json`, `company_tickers.json` (URLs do próprio motor; https://www.sec.gov/edgar/sec-api-documentation) |
+| Saída | Trimestres (receita, margens, lucro, LPA diluído, variação anual; 4º trimestre derivado e marcado), últimos 12 meses, frases do que mudou, último 10-Q/10-K, comunicado de resultados (EX-99 do 8-K com item 2.02) e aviso quando o XBRL está atrasado |
+| "Próximo resultado" | Só histórico: `earnings_history` = 8-Ks com item 2.02 (data de arquivamento, link). Nenhuma data futura é estimada |
+| Erros | Sem `SEC_USER_AGENT` 424; ticker sem CIK 404; sem XBRL (SEC 404) 422; outros erros da SEC 502 |
+| Frontend | Aba "Resultados (SEC)" do detalhe do ativo: tabela de trimestres, mudanças, links e histórico de divulgação (antes era JSON cru) |
+
+Consumo: até 3 chamadas à SEC por empresa a cada 12 h (facts, submissions, index.json do 8-K).
+
+Testes (`backend/tests/test_analyst_api.py`, arquivos salvos da SEC na skill): resultado, filings,
+mudanças e aviso idênticos aos da linha de comando do motor offline (AAPL e KO); histórico de 8-Ks
+2.02 igual ao das submissões e sem estimativa de data; cache sem novas chamadas; erros 404, 422 e 424.

@@ -4,11 +4,7 @@ news and fundamentals, scans and watchlists."""
 from __future__ import annotations
 
 import datetime as dt
-import json
-import tempfile
-import threading
 import uuid
-from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -18,7 +14,6 @@ from sqlalchemy import delete, desc, func, select, update
 from ..auth import CurrentUser, current_user
 from ..config import get_settings
 from ..db import new_id, now, scan_runs, tx, watchlist_assets, watchlists
-from ..engines.runner import EngineTimeout, last_error_line, run_script
 from ..schemas import ScanRequest, WatchlistAssetAdd, WatchlistCreate
 from ..services import indicators as ind
 from ..services import jobs as jobsvc
@@ -26,6 +21,7 @@ from ..services import market_calendar as mcal
 from ..services import policy
 from ..services import providers as prov
 from ..services import market_data as md
+from ..services import analyst as analystsvc
 from ..services import news as newsvc
 from ..services import sec_profile as secprof
 from ..services.tasks import universe_path, watchlist_symbols
@@ -219,34 +215,6 @@ def quotes(symbols: str = Query(min_length=1, max_length=400)) -> dict:
             "prices_hidden": not get_settings().show_raw_prices}
 
 
-_inline_engines: threading.BoundedSemaphore | None = None
-
-
-def _engine_slot() -> threading.BoundedSemaphore:
-    global _inline_engines
-    if _inline_engines is None:
-        _inline_engines = threading.BoundedSemaphore(get_settings().dp_max_inline_engines)
-    return _inline_engines
-
-
-def _engine_json(name: str, args: list[str], env: dict[str, str] | None = None) -> dict:
-    slot = _engine_slot()
-    if not slot.acquire(timeout=10):
-        return {"ok": False, "code": "busy", "message": "O servidor está ocupado com outras consultas. Tente em instantes."}
-    try:
-        with tempfile.TemporaryDirectory(prefix="dp-") as d:
-            try:
-                res = run_script(name, args, Path(d), timeout_s=45, env_extra=env)
-            except EngineTimeout as e:
-                return {"ok": False, "code": "timeout", "message": str(e)}
-    finally:
-        slot.release()
-    try:
-        return {"ok": True, "doc": json.loads(res.stdout)}
-    except ValueError:
-        return {"ok": False, "code": "engine_error", "message": last_error_line(res)}
-
-
 @router.get("/assets/{symbol}/news")
 def asset_news(symbol: str, hours: int = Query(168, ge=1, le=2160)):
     """SEC 8-K + GDELT headlines and coverage tone (+ Yahoo RSS where unofficial sources are allowed).
@@ -278,24 +246,17 @@ def asset_profile(symbol: str):
 
 
 @router.get("/assets/{symbol}/fundamentals")
-def asset_fundamentals(symbol: str):
+def asset_fundamentals(symbol: str, quarters: int = Query(6, ge=2, le=12)):
+    """Reported results (Bloco 9): trader-analyst on SEC data through the server's fetcher, plus the
+    history of earnings 8-Ks (item 2.02). See services/analyst.py."""
     try:
         sym = md.clean_symbol(symbol)
     except md.DataError as e:
         return _err(e)
-    ua = get_settings().sec_user_agent
-    if not ua:
-        return JSONResponse({"detail": {"code": "sec_user_agent_missing",
-                                        "message": "A SEC exige SEC_USER_AGENT (nome e e-mail) no backend."}},
-                            status_code=424)
-    refused = _spend("sec_edgar", 4)  # ticker list, company facts, submissions, filing index
-    if refused:
-        return refused
-    r = _engine_json("analyst", [sym, "--json", "--quarters", "6"], {"SEC_USER_AGENT": ua})
-    if not r["ok"]:
-        return JSONResponse({"detail": {"code": r["code"], "message": r["message"]}},
-                            status_code=503 if r["code"] == "busy" else 502)
-    return {"symbol": sym, "source": "SEC EDGAR (XBRL company facts)", **r["doc"]}
+    try:
+        return analystsvc.build(sym, quarters)
+    except analystsvc.AnalystError as e:
+        return JSONResponse({"detail": {"code": e.code, "message": e.message}}, status_code=e.status)
 
 
 # ---------------------------------------------------------------- scans

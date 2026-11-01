@@ -4,6 +4,7 @@ import { lazy, Suspense, useEffect, useMemo, useState, type FormEvent } from 're
 import { Link, useSearchParams } from 'react-router-dom'
 import { PageHeader } from '@/components/app/AppShell'
 import { DataTable, type Column } from '@/components/app/DataTable'
+import { FundamentalsPanel, type Fundamentals } from '@/components/app/FundamentalsPanel'
 import { JobProgress } from '@/components/app/JobProgress'
 import { Sparkline } from '@/components/app/KpiTile'
 import { CandlestickChart } from '@/components/charts/CandlestickChart'
@@ -287,7 +288,7 @@ function AssetDetail({ symbol, watchlists, onClose }: { symbol: string; watchlis
   })
   const funda = useQuery({
     queryKey: ['fundamentals', symbol],
-    queryFn: ({ signal }) => api<Record<string, unknown>>(`/assets/${symbol}/fundamentals`, { signal }),
+    queryFn: ({ signal }) => api<Fundamentals>(`/assets/${symbol}/fundamentals`, { signal }),
     enabled: tab === 'fundamentals',
     retry: false,
   })
@@ -505,7 +506,7 @@ function AssetDetail({ symbol, watchlists, onClose }: { symbol: string; watchlis
             ) : funda.isError ? (
               <ErrorState error={funda.error} />
             ) : (
-              <pre className="num max-h-80 overflow-auto rounded-[var(--radius-md)] bg-abyss p-3 text-[11px] text-muted">{JSON.stringify(funda.data, null, 1).slice(0, 6000)}</pre>
+              funda.data && <FundamentalsPanel d={funda.data} />
             ))}
         </div>
       </div>
