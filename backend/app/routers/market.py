@@ -26,6 +26,7 @@ from ..services import market_calendar as mcal
 from ..services import policy
 from ..services import providers as prov
 from ..services import market_data as md
+from ..services import news as newsvc
 from ..services.tasks import universe_path, watchlist_symbols
 from .common import audit, bad_request, calendar_refusal, not_found, rows, ser
 
@@ -246,27 +247,14 @@ def _engine_json(name: str, args: list[str], env: dict[str, str] | None = None) 
 
 
 @router.get("/assets/{symbol}/news")
-def asset_news(symbol: str):
+def asset_news(symbol: str, hours: int = Query(168, ge=1, le=2160)):
+    """SEC 8-K + GDELT headlines and coverage tone (+ Yahoo RSS where unofficial sources are allowed).
+    See services/news.py. Partial answers say what is missing; nothing is invented."""
     try:
         sym = md.clean_symbol(symbol)
     except md.DataError as e:
         return _err(e)
-    ua = get_settings().sec_user_agent
-    # The engine reads Yahoo's headline RSS (1 request) and, with a User-Agent, SEC's 8-K feed
-    # (ticker list + feed). The quota is spent here because the engine calls them itself.
-    refused = _spend("yahoo") or (_spend("sec_edgar", 2) if ua else None)
-    if refused:
-        return refused
-    args = ["--tickers", sym, "--json", "--dry-run", "--no-moves", "--all", "--hours", "168",
-            "--state", "state.json", "--watchlist", "none.json", "--plan", "none.json", "--portfolio", "none.json"]
-    if not ua:
-        args.append("--no-sec")
-    r = _engine_json("news", args, {"SEC_USER_AGENT": ua} if ua else None)
-    if not r["ok"]:
-        return JSONResponse({"detail": {"code": r["code"], "message": r["message"]}},
-                            status_code=503 if r["code"] == "busy" else 502)
-    return {"symbol": sym, "sec_included": bool(ua), **r["doc"],
-            "note": None if ua else "Filings 8-K da SEC desativados: configure SEC_USER_AGENT no backend."}
+    return newsvc.build(sym, hours)
 
 
 @router.get("/assets/{symbol}/fundamentals")

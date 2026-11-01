@@ -305,3 +305,34 @@ o motor no spark original (19 ativos); paginação e lotes; filtro de liquidez p
 barra; ORB de 19/10 às 10:15 com as mesmas 42 rupturas do motor no `wall5m` original (TSLA 364,18 às
 10:15, faixa até 362,18), em 2 lotes; corte ao vivo limitado ao atraso do plano gratuito; Yahoo só
 hoje; validação; política do modo público.
+
+---
+
+## Notícias: SEC 8-K + GDELT, Yahoo RSS só onde permitido (Bloco 7)
+
+`GET /api/assets/{s}/news?hours=168` (1 a 2160). O trader-news não foi editado: o servidor passa
+ao `collect` do motor o próprio "fetcher" (`services/news.py`), que manda cada requisição pela cota
+compartilhada, põe o `SEC_USER_AGENT` nas chamadas da SEC e responde "desligado" ao RSS do Yahoo
+quando `DP_ALLOW_UNOFFICIAL_SOURCES` está desligado (padrão do `public`). Os parsers do motor
+(`parse_sec_atom`, `tag`, `dedupe`) montam os itens.
+
+| Fonte | Como | Categoria |
+|---|---|---|
+| SEC EDGAR 8-K | `https://www.sec.gov/cgi-bin/browse-edgar?...&type=8-K&output=atom` (URL do próprio motor), com `SEC_USER_AGENT`; `company_tickers.json` baixado no máximo 1 vez por dia e guardado em disco (`DP_DATA_DIR/cache`). Cota local 300/min (a SEC publica 10/s) | A (oficial) |
+| GDELT DOC 2.0 | `GET https://api.gdeltproject.org/api/v2/doc/doc` com `query="<nome>" sourcelang:english`, `mode=ArtList` (25 manchetes, 7 dias, `sort=DateDesc`) e `mode=TimelineTone` (tom médio). Nome da empresa = título da lista da SEC sem sufixos (Inc., Corp., Co...). Cache de 15 min; cota local 10/min. Cada manchete leva o link original e o veículo; atribuição "GDELT Project" na resposta e na tela | A (aberto, sem chave) |
+| Yahoo RSS | Só com `DP_ALLOW_UNOFFICIAL_SOURCES` ligado (demo local). No `public` nem é chamado | não oficial |
+
+Ressalva: a página de referência do GDELT (https://blog.gdeltproject.org/gdelt-doc-2-0-api-debuts/)
+não abre no ambiente em que isto foi escrito. Os parâmetros e campos (`articles[].url/title/
+seendate/domain/language/sourcecountry`, `timeline[].data[].value`) foram conferidos em vários
+clientes de terceiros. Confirmar no teste real.
+
+Sem `SEC_USER_AGENT`: sem 8-K e sem GDELT (o nome da empresa vem da SEC), com aviso. O tom é a
+medida do GDELT sobre o texto das notícias, mostrado como número com explicação, nunca como sinal.
+Falha de uma fonte não derruba as outras: vai para `errors`.
+
+Testes (`backend/tests/test_news_api.py`): itens da SEC e do Yahoo iguais aos do motor lendo os
+mesmos arquivos salvos da skill; GDELT (resposta ESCRITA À MÃO no formato documentado) com link,
+veículo e horário, link inseguro descartado, tom médio; consulta pelo nome da empresa; User-Agent
+nas chamadas da SEC; lista de tickers baixada uma vez e GDELT em cache; GDELT recusando sem derrubar
+a SEC; sem User-Agent; modo público sem chamar o Yahoo; ticker desconhecido; limpeza do nome.
