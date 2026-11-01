@@ -181,6 +181,17 @@ const RANGES = [
 ] as const
 
 /** GET /api/assets/{s}/news (Bloco 7): SEC 8-K, GDELT headlines and tone, Yahoo RSS only where allowed. */
+/** GET /api/assets/{s}/profile (Bloco 8): SEC metadata; sector = SIC division. */
+type SecProfile = {
+  cik: string
+  name: string
+  exchanges: string[]
+  sic: string | null
+  sic_description: string | null
+  sector: { division: string; name: string } | null
+  sec_url: string
+}
+
 type NewsRes = {
   items?: { id: string; title: string; link: string; time?: string | null; source?: string; kind?: string; provider?: string; form?: string; tags?: string[] }[]
   coverage_tone?: { average: number; points: number; timespan: string; label: string } | null
@@ -268,6 +279,12 @@ function AssetDetail({ symbol, watchlists, onClose }: { symbol: string; watchlis
     enabled: tab === 'news',
     staleTime: 300_000,
   })
+  const profile = useQuery({
+    queryKey: ['profile', symbol],
+    queryFn: ({ signal }) => api<SecProfile>(`/assets/${symbol}/profile`, { signal }),
+    retry: false,
+    staleTime: 3_600_000,
+  })
   const funda = useQuery({
     queryKey: ['fundamentals', symbol],
     queryFn: ({ signal }) => api<Record<string, unknown>>(`/assets/${symbol}/fundamentals`, { signal }),
@@ -306,7 +323,17 @@ function AssetDetail({ symbol, watchlists, onClose }: { symbol: string; watchlis
             <h2 className="num text-2xl text-fg">{symbol}</h2>
             <DataBadge kind="delayed" />
           </div>
-          <p className="truncate text-sm text-muted">{(hidden ? rel.data?.name : c?.name) ?? (chart.isLoading || rel.isLoading ? 'Carregando…' : '')}</p>
+          <p className="truncate text-sm text-muted">{(hidden ? rel.data?.name : c?.name) ?? profile.data?.name ?? (chart.isLoading || rel.isLoading ? 'Carregando…' : '')}</p>
+          {profile.data && (
+            <p className="mt-0.5 text-[11px] text-faint">
+              {profile.data.sector ? `${profile.data.sector.name} · ` : ''}
+              {profile.data.sic ? `SIC ${profile.data.sic}${profile.data.sic_description ? ` (${profile.data.sic_description})` : ''} · ` : ''}
+              {profile.data.exchanges.length ? `${profile.data.exchanges.join(', ')} · ` : ''}
+              <a href={profile.data.sec_url} target="_blank" rel="noopener noreferrer" className="hover:text-ember">
+                CIK {profile.data.cik} (SEC)
+              </a>
+            </p>
+          )}
         </div>
         <div className="text-right">
           {!hidden && <p className="num text-2xl text-fg">{fmt.num(c?.quote.last)}</p>}

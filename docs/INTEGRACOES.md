@@ -336,3 +336,28 @@ mesmos arquivos salvos da skill; GDELT (resposta ESCRITA À MÃO no formato docu
 veículo e horário, link inseguro descartado, tom médio; consulta pelo nome da empresa; User-Agent
 nas chamadas da SEC; lista de tickers baixada uma vez e GDELT em cache; GDELT recusando sem derrubar
 a SEC; sem User-Agent; modo público sem chamar o Yahoo; ticker desconhecido; limpeza do nome.
+
+---
+
+## Universo: metadados da SEC (Bloco 8)
+
+`GET /api/assets/{s}/profile` (`services/sec_profile.py`): CIK, nome registrado, bolsas, SIC e
+descrição, setor = divisão SIC, fim do ano fiscal, categoria do emissor, estado de constituição e
+link para a página da empresa no EDGAR. Exige `SEC_USER_AGENT` (sem ele: 424). O universo de ações
+continua vindo da Nasdaq Trader (`scan.py universe`).
+
+| Item | Valor |
+|---|---|
+| CIK e nome | `https://www.sec.gov/files/company_tickers.json` (o mesmo arquivo do Bloco 7, 1 vez por dia) |
+| Bolsas, SIC, categoria | `https://data.sec.gov/submissions/CIK##########.json`, documentado em https://www.sec.gov/edgar/sec-api-documentation (nome, nomes anteriores, bolsas e tickers). Os campos `sic`, `sicDescription`, `category`, `fiscalYearEnd`, `stateOfIncorporation` são os lidos por todas as bibliotecas cliente; o arquivo de submissões salvo na skill é um trecho sem eles. Confirmar no teste real |
+| Setor | Divisão do Manual SIC (https://www.osha.gov/data/sic-manual) pelos dois primeiros dígitos: A 01–09, B 10–14, C 15–17, D 20–39, E 40–49, F 50–51, G 52–59, H 60–67, I 70–89, J 91–97, K 99. Faixas sem divisão (18–19, 68–69, 98) ficam sem setor |
+| Cache | Submissões em disco por 7 dias, sem o histórico de filings (`DP_DATA_DIR/cache/sec_submissions`) |
+| Fora | Valor de mercado (só uso interno, não calculado) e free float, conforme o relatório de provedores |
+| Frontend | Detalhe do ativo no Scanner: setor, SIC, bolsas e CIK com link para a SEC |
+
+Consumo: 1 chamada à SEC por ativo a cada 7 dias (mais a lista de tickers, 1 por dia).
+
+Testes (`backend/tests/test_sec_profile.py`): perfil a partir dos arquivos salvos da SEC na skill,
+com os campos ausentes do trecho ACRESCENTADOS À MÃO e marcados; cache em disco sem filings e sem
+nova chamada; símbolo desconhecido; erro da SEC; sem User-Agent; tabela de divisões SIC, incluindo
+os limites e as faixas sem divisão.

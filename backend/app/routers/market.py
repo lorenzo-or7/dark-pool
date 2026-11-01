@@ -27,6 +27,7 @@ from ..services import policy
 from ..services import providers as prov
 from ..services import market_data as md
 from ..services import news as newsvc
+from ..services import sec_profile as secprof
 from ..services.tasks import universe_path, watchlist_symbols
 from .common import audit, bad_request, calendar_refusal, not_found, rows, ser
 
@@ -255,6 +256,25 @@ def asset_news(symbol: str, hours: int = Query(168, ge=1, le=2160)):
     except md.DataError as e:
         return _err(e)
     return newsvc.build(sym, hours)
+
+
+@router.get("/assets/{symbol}/profile")
+def asset_profile(symbol: str):
+    """SEC metadata (Bloco 8): CIK, exchanges, SIC and the SIC division as the sector."""
+    try:
+        sym = md.clean_symbol(symbol)
+    except md.DataError as e:
+        return _err(e)
+    if not get_settings().sec_user_agent:
+        return JSONResponse({"detail": {"code": "sec_user_agent_missing",
+                                        "message": "A SEC exige SEC_USER_AGENT (nome e e-mail) no backend."}},
+                            status_code=424)
+    try:
+        return secprof.profile(sym)
+    except newsvc.NewsError as e:
+        code = 404 if e.code == "unknown_symbol" else 503 if e.code in ("provider_paused", "quota_exhausted",
+                                                                        "rate_limited", "needs_config") else 502
+        return JSONResponse({"detail": {"code": e.code, "message": e.message}}, status_code=code)
 
 
 @router.get("/assets/{symbol}/fundamentals")

@@ -175,8 +175,8 @@ Um bloco por vez. Pare e entregue o relatório de cada bloco antes do próximo, 
 5. ~~Alerts: cotação de vários símbolos por requisição; remover o Stooq~~ (branch `bloco4-entry-exit`; sob demanda, regras no navegador)
 6. ~~Scanner: diário e ORB~~ (branch `bloco4-entry-exit`; SIP = volume consolidado, sem recalibração)
 7. ~~News: SEC 8-K + GDELT; desligar o RSS do Yahoo em produção~~ (branch `bloco4-entry-exit`)
-8. **Universo: metadados da SEC** ← retomar aqui: (CIK, bolsa, SIC como setor, após confirmar na documentação); market cap só interno; float fora
-9. Analyst: manter SEC; "próximo resultado" só como histórico do item 2.02 dos 8-K
+8. ~~Universo: metadados da SEC~~ (branch `bloco4-entry-exit`; perfil por ativo) (CIK, bolsa, SIC como setor, após confirmar na documentação); market cap só interno; float fora
+9. **Analyst** ← retomar aqui: manter SEC; "próximo resultado" só como histórico do item 2.02 dos 8-K
 10. Pelosi: House Clerk com a página pública desligada até o parecer jurídico
 
 O Yahoo só sai de cada módulo depois que o substituto passar nos testes.
