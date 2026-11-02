@@ -29,6 +29,7 @@ import httpx
 from ..config import get_settings
 from ..engines.runner import load_module
 from . import providers
+from .cachefile import write_atomic
 
 INDEX_TTL = 6 * 3600
 PID = "house_clerk"
@@ -101,7 +102,7 @@ def index(year: int, members: list[str] | None = None, since: str | None = None,
     f = _cache(f"{year}FD.zip")
     cached = f.exists() and time.time() - f.stat().st_mtime < INDEX_TTL
     if not cached:
-        f.write_bytes(_download(pt.INDEX_URL % (year, "FD")))
+        write_atomic(f, _download(pt.INDEX_URL % (year, "FD")))
     collected = dt.datetime.fromtimestamp(f.stat().st_mtime, dt.UTC).isoformat()
     try:
         rows = pt.parse_index(pt.read_index_bytes(f.read_bytes()), year)
@@ -121,7 +122,7 @@ def _pdf_text(path: Path) -> str | None:
 
 def report(doc_id: str, year: int, filed: str | None = None) -> dict:
     require_allowed()
-    if not doc_id.isdigit() or len(doc_id) > 12:
+    if not (doc_id.isascii() and doc_id.isdigit()) or len(doc_id) > 12:
         raise CongressError("invalid_doc_id", "DocID inválido.", 400)
     pt = load_module("pelosi")
     url = pt.PTR_URL % (year, doc_id)
@@ -131,7 +132,7 @@ def report(doc_id: str, year: int, filed: str | None = None) -> dict:
         data = _download(url)
         if not data.startswith(b"%PDF"):          # the engine's own check in _fetch_and_read
             raise CongressError("bad_payload", "A House Clerk não devolveu um PDF para esse DocID.")
-        f.write_bytes(data)
+        write_atomic(f, data)
     collected = dt.datetime.fromtimestamp(f.stat().st_mtime, dt.UTC).isoformat()
     text = _pdf_text(f)
     out = {"doc_id": doc_id, "year": year, "pdf_url": url, "collected_at": collected, "from_cache": cached,

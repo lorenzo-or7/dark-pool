@@ -107,3 +107,33 @@ def test_errors(api: tuple[TestClient, Sec], monkeypatch: pytest.MonkeyPatch) ->
     config.get_settings.cache_clear()
     r = c.get("/api/assets/AAPL/fundamentals", headers=DEMO)
     assert r.status_code == 424 and r.json()["detail"]["code"] == "sec_user_agent_missing"
+
+
+def test_unreadable_cache_is_a_miss(api: tuple[TestClient, Sec], settings_env: Path) -> None:
+    c, sec = api
+    first = c.get("/api/assets/AAPL/fundamentals", headers=DEMO).json()
+    folder = settings_env / "data" / "cache" / "sec_analyst"
+    for f in folder.glob("*.json"):
+        f.write_text("{broken")
+    n = len(sec.calls)
+    again = c.get("/api/assets/AAPL/fundamentals", headers=DEMO)
+    assert again.status_code == 200, again.text
+    assert again.json()["result"] == first["result"] and len(sec.calls) > n
+    assert not list(folder.glob("*.tmp"))
+
+
+def test_earnings_history_skips_incomplete_rows() -> None:
+    """HAND-WRITTEN submissions excerpt: one complete 8-K 2.02, one without accession, one 10-Q."""
+    from app.services.analyst import earnings_history
+    sub = {"filings": {"recent": {
+        "form": ["8-K", "8-K", "10-Q", "8-K"],
+        "items": ["2.02,9.01", "2.02", "", "5.07"],
+        "accessionNumber": ["0000320193-26-000001"],
+        "filingDate": ["2026-10-30", "2026-07-31", "2026-08-01", "2026-03-01"],
+        "primaryDocument": ["a8-k.htm", "b8-k.htm", "q.htm", "c.htm"],
+    }}}
+    out = earnings_history(sub, "0000320193")
+    assert [h["filed"] for h in out] == ["2026-10-30"] and out[0]["event_date"] is None
+    assert out[0]["url"] == "https://www.sec.gov/Archives/edgar/data/320193/000032019326000001/a8-k.htm"
+    assert earnings_history({}, "0000320193") == [] and earnings_history({"filings": {"recent": {"form": ["8-K"]}}},
+                                                                         "1") == []

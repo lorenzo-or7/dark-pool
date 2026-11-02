@@ -427,3 +427,34 @@ sem pdftotext (o `pdf_to_text` real com o PATH sem o programa); DocID inválido;
 arquivo inválido; cota por minuto; downloads simultâneos; modo público desligado (403, sem download)
 e ligado com `DP_PELOSI_PUBLIC=true`. Frontend: `Congress.test.tsx` e o e2e (página no público
 mostra a política e a API responde 403).
+
+## Revisão final dos Blocos 7 a 10 (02/11/2026)
+
+Revisão do código que ainda não está na `main` (notícias, perfil SEC, Analyst e PTRs). Correções:
+
+- **Cache em disco gravado de forma atômica** (`services/cachefile.py`): SEC (lista de tickers,
+  submissions, company facts, index.json) e House Clerk (índice e PDFs) gravam num arquivo temporário
+  e trocam com `os.replace`. Um arquivo de cache ilegível (gravação interrompida) passa a ser tratado
+  como ausente e é baixado de novo, em vez de derrubar o endpoint até o cache vencer (até 7 dias no
+  perfil SEC). Uma lista de tickers da SEC em formato inesperado não entra mais no cache.
+- **Janela do GDELT segue `?hours=`** em `/api/assets/{s}/news`: antes era sempre 7 dias, mesmo com
+  `hours=2160`. Agora `timespan` = horas arredondadas para cima em dias, de 1 a 90 (`gdelt_timespan`);
+  itens mais antigos que `hours` continuam sendo cortados depois. O frontend usa o padrão (168 h = 7 dias),
+  então a tela não muda.
+- **Histórico de 8-K item 2.02 tolera linhas incompletas** no arquivo de submissions (sem accession,
+  data ou documento): a linha é pulada em vez de dar erro 500.
+- **DocID do PTR só com dígitos ASCII**: `str.isdigit()` aceitava dígitos Unicode (², dígitos árabes).
+
+Testes novos: janela do GDELT (padrão e 720 h), cache de tickers ilegível e lista inválida não
+cacheada, cache de submissions ilegível, cache do Analyst ilegível, linhas incompletas no histórico
+(trecho de submissions ESCRITO À MÃO, marcado no teste) e DocIDs com dígitos Unicode.
+
+Suítes em 02/11/2026: backend 216 passaram e 10 pulados; Postgres local 9; motores da skill 243;
+frontend typecheck, 15 testes, build, lint com os mesmos 21 avisos antigos; Playwright 14 passaram e
+6 pulados. Testes reais (Alpaca, SEC, GDELT, House Clerk) continuam pendentes: este ambiente não
+alcança esses sites.
+
+Sem mudança: a decisão sobre o `pdftotext` no Render (ver o Bloco 10). Não há PDF real de PTR no
+repositório para validar uma extração em Python puro contra o `pdftotext -layout`, então nada foi
+trocado; o caminho testável é o runtime Docker com `poppler-utils`, se o teste em produção mostrar
+`readable: false`.

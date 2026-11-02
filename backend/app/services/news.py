@@ -32,6 +32,7 @@ from ..config import get_settings
 from ..engines.runner import load_module
 from . import market_data as md
 from . import providers
+from .cachefile import write_atomic
 
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
@@ -102,21 +103,30 @@ def company_tickers() -> tuple[bytes, dict[str, dict]]:
         if _tickers["raw"] is not None and time.time() - _tickers["at"] < TICKERS_TTL:
             return _tickers["raw"], _tickers["map"]
         f = _cache_file()
-        raw = None
         if f.exists() and time.time() - f.stat().st_mtime < TICKERS_TTL:
             raw = f.read_bytes()
-        if raw is None:
-            raw = sec_fetch(SEC_TICKERS_URL)
-            f.write_bytes(raw)
-        try:
-            data = json.loads(raw.decode("utf-8"))
-            mp = {str(v["ticker"]).upper().replace("-", "."): {"cik": str(v["cik_str"]).zfill(10),
-                                                              "title": str(v.get("title") or "")}
-                  for v in data.values()}
-        except (ValueError, KeyError, AttributeError, TypeError):
+            mp = _ticker_map(raw)
+            if mp is not None:
+                _tickers.update(at=time.time(), raw=raw, map=mp)
+                return raw, mp
+            f.unlink(missing_ok=True)          # unreadable cache: a miss, not a broken endpoint
+        raw = sec_fetch(SEC_TICKERS_URL)
+        mp = _ticker_map(raw)
+        if mp is None:                         # not cached, so the next call asks the SEC again
             raise NewsError("bad_payload", "A lista de tickers da SEC veio num formato inesperado.")
+        write_atomic(f, raw)
         _tickers.update(at=time.time(), raw=raw, map=mp)
         return raw, mp
+
+
+def _ticker_map(raw: bytes) -> dict[str, dict] | None:
+    try:
+        data = json.loads(raw.decode("utf-8"))
+        return {str(v["ticker"]).upper().replace("-", "."): {"cik": str(v["cik_str"]).zfill(10),
+                                                            "title": str(v.get("title") or "")}
+                for v in data.values()}
+    except (ValueError, KeyError, AttributeError, TypeError, UnicodeDecodeError):
+        return None
 
 
 def query_name(title: str) -> str:
@@ -215,6 +225,12 @@ def _seen(v: str) -> str | None:
         return None
 
 
+def gdelt_timespan(hours: int) -> str:
+    """The GDELT window for the requested hours, in whole days ("7d" for the default 168 h). GDELT
+    covers about three months, so 90 days at most. Items older than `hours` are cut afterwards."""
+    return f"{min(90, max(1, -(-hours // 24)))}d"
+
+
 def gdelt_headlines(name: str, timespan: str = "7d", maxrecords: int = 25) -> list[dict]:
     doc = _gdelt({"query": f'"{name}" sourcelang:english', "mode": "ArtList", "format": "json",
                   "maxrecords": str(maxrecords), "timespan": timespan, "sort": "DateDesc"})
@@ -283,13 +299,14 @@ def build(symbol: str, hours: int = 168) -> dict:
     tone = None
     if company:
         name = query_name(company["title"])
+        span = gdelt_timespan(hours)
         try:
-            g = gdelt_headlines(name)
+            g = gdelt_headlines(name, span)
             for it in g:
                 it["ticker"] = symbol
                 it["time"] = nw.parse_time(it["time"]) if it["time"] else None
             items += g
-            tone = gdelt_tone(name)
+            tone = gdelt_tone(name, span)
             sources.append("GDELT")
         except NewsError as e:
             errors.append(f"GDELT: {e.message}")

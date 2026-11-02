@@ -114,8 +114,9 @@ def test_demo_news_merges_sec_yahoo_and_gdelt(api: TestClient, net: Net) -> None
     assert all(ua == UA for _, ua in net.sec)
     gq = [p for u, p in net.http if "gdeltproject" in u]
     assert gq[0] == {"query": '"Apple" sourcelang:english', "mode": "ArtList", "format": "json", "maxrecords": "25",
-                     "timespan": "7d", "sort": "DateDesc"}
-    assert gq[1]["mode"] == "TimelineTone"
+                     "timespan": "90d", "sort": "DateDesc"}                # the window follows ?hours=
+    assert gq[1]["mode"] == "TimelineTone" and gq[1]["timespan"] == "90d"
+    assert b["coverage_tone"]["timespan"] == "90d"
 
 
 def test_sec_ticker_list_is_downloaded_once_and_gdelt_is_cached(api: TestClient, net: Net) -> None:
@@ -162,3 +163,40 @@ def test_unknown_ticker_and_name_cleanup(api: TestClient, net: Net) -> None:
     assert query_name("Apple Inc.") == "Apple" and query_name("Tesla, Inc.") == "Tesla"
     assert query_name("COCA COLA CO") == "COCA COLA" and query_name("BERKSHIRE HATHAWAY INC") == "BERKSHIRE HATHAWAY"
     assert api.get("/api/assets/AAPL/news?hours=0", headers=DEMO).status_code == 422
+
+
+def test_gdelt_window_follows_hours(api: TestClient, net: Net) -> None:
+    from app.services import news
+    assert [news.gdelt_timespan(h) for h in (1, 24, 25, 168, 720, 2160)] == ["1d", "1d", "2d", "7d", "30d", "90d"]
+    api.get("/api/assets/AAPL/news", headers=DEMO)                           # default 168 h
+    api.get("/api/assets/AAPL/news?hours=720", headers=DEMO)
+    spans = [p["timespan"] for u, p in net.http if "gdeltproject" in u and p["mode"] == "ArtList"]
+    assert spans == ["7d", "30d"]
+
+
+def test_unreadable_ticker_cache_is_a_miss(api: TestClient, net: Net, settings_env: Path) -> None:
+    f = settings_env / "data" / "cache" / "sec_company_tickers.json"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_bytes(b'{"0": {"cik_str": 3201')                                 # half-written file
+    r = api.get("/api/assets/AAPL/news", headers=DEMO)
+    assert r.status_code == 200 and r.json()["company"] == "Apple Inc."
+    assert sum(1 for u, _ in net.sec if u.endswith("company_tickers.json")) == 1
+    assert f.read_bytes() == (FIX / "company_tickers.json").read_bytes()
+    assert not list(f.parent.glob("*.tmp"))
+
+
+def test_bad_ticker_list_is_not_cached(api: TestClient, net: Net, settings_env: Path,
+                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import news
+    calls = []
+
+    def html(url: str, ua: str) -> httpx.Response:
+        calls.append(url)
+        return httpx.Response(200, content=b"<html>maintenance</html>", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(news, "_sec_get", html)
+    b = api.get("/api/assets/AAPL/news", headers=DEMO).json()
+    assert any("formato inesperado" in e for e in b["errors"])
+    assert not (settings_env / "data" / "cache" / "sec_company_tickers.json").exists()
+    monkeypatch.setattr(news, "_sec_get", net.sec_get)
+    assert api.get("/api/assets/AAPL/news", headers=DEMO).json()["company"] == "Apple Inc."

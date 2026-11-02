@@ -242,7 +242,7 @@ def test_no_rows_recognised(house: tuple[TestClient, House], monkeypatch: pytest
 
 def test_report_errors(house: tuple[TestClient, House], settings_env: Path) -> None:
     c, h = house
-    for bad in ("abc", "12a4", "1234567890123", "..%2Fsecret"):
+    for bad in ("abc", "12a4", "1234567890123", "..%2Fsecret", "%C2%B2%C2%B3", "%D9%A1%D9%A2"):  # ², ³, Arabic digits
         r = c.get(f"/api/congress/ptrs/{bad}", params={"year": 2026}, headers=DEMO)
         assert r.status_code in (400, 404), bad
         if r.status_code == 400:

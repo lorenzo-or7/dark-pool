@@ -94,3 +94,15 @@ def test_sic_divisions(code: str | None, division: str | None) -> None:
     from app.services.sec_profile import sic_division
     d = sic_division(code)
     assert (d["division"] if d else None) == division
+
+
+def test_unreadable_submissions_cache_is_a_miss(api: tuple[TestClient, Sec], settings_env: Path) -> None:
+    c, sec = api
+    f = settings_env / "data" / "cache" / "sec_submissions" / "CIK0000320193.json"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text('{"cik": "320193", "na')                                     # half-written file
+    r = c.get("/api/assets/AAPL/profile", headers=DEMO)
+    assert r.status_code == 200, r.text
+    assert r.json()["from_cache"] is False and r.json()["sic"] == "3571"
+    assert any(u.endswith("CIK0000320193.json") for u in sec.calls)
+    assert json.loads(f.read_text())["sic"] == "3571"

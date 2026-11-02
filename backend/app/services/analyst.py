@@ -21,6 +21,7 @@ from pathlib import Path
 from ..config import get_settings
 from ..engines.runner import load_module
 from . import news
+from .cachefile import read_json, write_atomic
 
 FRESH_TTL = 12 * 3600
 INDEX_TTL = 30 * 24 * 3600
@@ -61,8 +62,10 @@ class ServerFactsFetcher:
         p = _cache_path(url)
         ttl = INDEX_TTL if url.endswith("/index.json") else FRESH_TTL
         if p.exists() and time.time() - p.stat().st_mtime < ttl:
-            self.cached += 1
-            return json.loads(p.read_text(encoding="utf-8"))
+            doc = read_json(p)
+            if doc is not None:
+                self.cached += 1
+                return doc
         try:
             raw = news.sec_fetch(url)
         except news.NewsError as e:
@@ -74,25 +77,37 @@ class ServerFactsFetcher:
             doc = json.loads(raw.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             raise self.engine.FactsError("a SEC devolveu um formato inesperado")
-        p.write_text(json.dumps(doc), encoding="utf-8")
+        write_atomic(p, json.dumps(doc).encode("utf-8"))
         return doc
 
 
 def earnings_history(submissions: dict, cik: str, limit: int = HISTORY) -> list[dict]:
-    """8-Ks with item 2.02 (results of operations), newest first, from the submissions file."""
+    """8-Ks with item 2.02 (results of operations), newest first, from the submissions file.
+    A row the file does not describe completely (no accession, date or document) is skipped."""
     rec = (submissions.get("filings") or {}).get("recent") or {}
     forms = rec.get("form") or []
-    items = rec.get("items") or [""] * len(forms)
+
+    def col(name: str) -> list:
+        v = rec.get(name)
+        return v if isinstance(v, list) else []
+
+    items, accs, filed, docs, reported = (col("items"), col("accessionNumber"), col("filingDate"),
+                                          col("primaryDocument"), col("reportDate"))
+
+    def at(lst: list, i: int):  # noqa: ANN202
+        return lst[i] if i < len(lst) else None
+
     out = []
     base = int(cik)
     for i, form in enumerate(forms):
-        if form != "8-K" or "2.02" not in str(items[i] if i < len(items) else ""):
+        if form != "8-K" or "2.02" not in str(at(items, i) or ""):
             continue
-        acc = rec["accessionNumber"][i]
-        folder = f"https://www.sec.gov/Archives/edgar/data/{base}/{acc.replace('-', '')}/"
-        out.append({"filed": rec["filingDate"][i], "event_date": (rec.get("reportDate") or [None] * len(forms))[i] or None,
-                    "accession": acc, "items": str(items[i]),
-                    "url": folder + rec["primaryDocument"][i], "index": folder + f"{acc}-index.htm"})
+        acc, day, doc = at(accs, i), at(filed, i), at(docs, i)
+        if not (acc and day and doc):
+            continue
+        folder = f"https://www.sec.gov/Archives/edgar/data/{base}/{str(acc).replace('-', '')}/"
+        out.append({"filed": day, "event_date": at(reported, i) or None, "accession": acc, "items": str(at(items, i)),
+                    "url": folder + str(doc), "index": folder + f"{acc}-index.htm"})
         if len(out) >= limit:
             break
     return out

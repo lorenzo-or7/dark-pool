@@ -22,6 +22,7 @@ from pathlib import Path
 
 from ..config import get_settings
 from . import news
+from .cachefile import read_json, write_atomic
 
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 TTL = 7 * 24 * 3600
@@ -66,7 +67,9 @@ def submissions(cik: str) -> tuple[dict, dt.datetime, bool]:
     """-> (submissions JSON without the filings list, fetched_at, from_cache)."""
     p = _cache_path(cik)
     if p.exists() and time.time() - p.stat().st_mtime < TTL:
-        return json.loads(p.read_text(encoding="utf-8")), dt.datetime.fromtimestamp(p.stat().st_mtime, dt.UTC), True
+        doc = read_json(p)
+        if isinstance(doc, dict):
+            return doc, dt.datetime.fromtimestamp(p.stat().st_mtime, dt.UTC), True
     raw = news.sec_fetch(SUBMISSIONS_URL.format(cik=cik))
     try:
         doc = json.loads(raw.decode("utf-8"))
@@ -75,7 +78,7 @@ def submissions(cik: str) -> tuple[dict, dt.datetime, bool]:
     if not isinstance(doc, dict):
         raise news.NewsError("bad_payload", "A SEC devolveu um formato inesperado.")
     doc.pop("filings", None)   # the filing history is large and not needed here
-    p.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+    write_atomic(p, json.dumps(doc, ensure_ascii=False).encode("utf-8"))
     return doc, dt.datetime.now(dt.UTC), False
 
 
