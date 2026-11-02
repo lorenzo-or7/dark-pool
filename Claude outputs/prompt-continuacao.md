@@ -1,4 +1,4 @@
-# Prompt de continuação — DARK POOL (estado de 01/11/2026, 20h10)
+# Prompt de continuação — DARK POOL (estado de 02/11/2026, manhã)
 
 > Cole este prompt no agente de código da outra conta, com acesso ao repositório
 > https://github.com/lorenzo-or7/dark-pool (ou ao checkout local do usuário). Este arquivo está na branch
@@ -20,9 +20,11 @@ nunca escreva chaves em código, log, commit ou documentação; responda em port
 
 ## Onde está o código
 
-Branch **`bloco4-entry-exit`** no GitHub, sobre o `695bccd` (último commit da `main`). A `main` não foi alterada.
+Branch **`bloco4-entry-exit`** no GitHub. O PR #2 (até o Bloco 6) já foi juntado à `main` pelo dono do repositório
+(`556cc4c`). O resto (ajuste do Scanner, Blocos 7 a 10 e a revisão final) está no **PR #3, aberto em 02/11/2026,
+aguardando revisão** — não fazer merge nem deploy sem autorização.
 - Ver: https://github.com/lorenzo-or7/dark-pool/tree/bloco4-entry-exit
-- Pull request para revisão: https://github.com/lorenzo-or7/dark-pool/pull/new/bloco4-entry-exit
+- Pull request aberto: https://github.com/lorenzo-or7/dark-pool/pull/3
 - Checkout: `git fetch origin && git checkout bloco4-entry-exit`
 
 Commits da branch (do mais antigo ao mais novo):
@@ -39,7 +41,9 @@ Commits da branch (do mais antigo ao mais novo):
 | `31fa928` | Remove o prompt de continuação do repositório (guardado no projeto do Claude) |
 | `711a2e3` | Bloco 9: Analyst pela SEC com o fetcher do servidor (cache em disco) e histórico de divulgação (8-K item 2.02, sem estimar datas); corrige a rota de fundamentos; aba "Resultados (SEC)" em tabela |
 | `d91e319` | Bloco 10 em andamento: backend inicial dos PTRs da Câmara (House Clerk) |
-| (último) | Bloco 10 concluído: testes, página "Congresso", `pelosi_shown` na política, PDF validado e downloads deduplicados, documentação |
+| `dce1b1d` | Bloco 10 concluído: testes, página "Congresso", `pelosi_shown` na política, PDF validado e downloads deduplicados, documentação |
+| `dfa7790` | Revisão final dos Blocos 7 a 10: cache em disco atômico (`services/cachefile.py`) e cache ilegível tratado como ausente; janela do GDELT segue `?hours=`; histórico 8-K 2.02 tolera linhas incompletas; DocID só ASCII; remove `rascunho-bloco3-alpaca.py` |
+| (último) | Este prompt atualizado (PR #3 aberto) |
 
 ## Bloco 10 (Pelosi) — CONCLUÍDO no último commit
 
@@ -90,15 +94,22 @@ nunca o Supabase). No Linux: `python -m pytest backend`; para o Playwright com u
       índice e PDFs reais da House Clerk (rodar o demo local e abrir `/app/congress`) e `pdftotext` no Render.
 - [ ] Pendências externas de termos (Alpaca em site público; parecer jurídico do Pelosi): ver o ANEXO ("PENDÊNCIAS EXTERNAS").
 
-## Onde retomar: revisão final (todos os blocos de integração feitos)
+## Revisão final do código — FEITA em 02/11/2026
 
-Não há bloco de código pendente na ordem de integração. Próximos passos, um de cada vez, sempre perguntando ao usuário:
+Ver a seção "Revisão final dos Blocos 7 a 10" em `docs/INTEGRACOES.md`. Suítes depois dela (Linux): backend
+216 passed e 10 skipped (só `backend/tests`); motores da skill 243 (`backend/vendor/day_trader_skill/tests`);
+Postgres local 9; frontend typecheck, 15 testes, build, lint 21 avisos antigos; Playwright 14 passed e 6 skipped.
+(O "453" do Bloco 10 somava backend e motores.)
+
+## Onde retomar: testes reais e revisão do PR #3
+
+Não há bloco de código pendente. Próximos passos, um de cada vez, sempre perguntando ao usuário:
 1. Testes reais no computador do usuário (Windows, checkout `C:\Users\lmors\OneDrive\Documentos\GitHub\dark-pool`):
    `git pull` na branch, rodar todas as suítes, depois `scripts\check_alpaca.py` com as chaves novas e o demo local
    (`/app/congress`, notícias, perfil SEC, Analyst) com `SEC_USER_AGENT` configurado. Registrar os resultados reais
    em `docs/INTEGRACOES.md`, separados dos testes com fixtures. Corrigir só o que o teste real mostrar.
-2. Revisar com o usuário o pull request da branch `bloco4-entry-exit` para a `main` (descrição com o resumo dos
-   Blocos 4 a 10, testes e pendências). Não fazer merge nem deploy sem autorização.
+2. Acompanhar o PR #3 (https://github.com/lorenzo-or7/dark-pool/pull/3): responder a comentários de revisão com
+   correções na branch. Não fazer merge nem deploy sem autorização.
 3. Pendências externas de termos antes de publicar (Alpaca, parecer do Pelosi) e a decisão sobre o `pdftotext`.
 
 Ao fim de cada etapa: rode todas as suítes, atualize `docs/INTEGRACOES.md`, faça commit na branch
@@ -110,7 +121,7 @@ repositório, exceto este arquivo, que o usuário pediu para deixar em `Claude o
 
 # ANEXO — Contexto da integração dos provedores gratuitos no DARK POOL
 
-> Estado atualizado em 01/11/2026, 20h10: Blocos 1 a 10 feitos; os 4 a 10 e a exibição em R estão na branch `bloco4-entry-exit`. Falta a revisão final com testes reais (ver o início deste arquivo).
+> Estado atualizado em 02/11/2026: Blocos 1 a 10 feitos e revisão do código feita; Blocos 4 a 6 na `main` (PR #2), o resto no PR #3 (aberto). Faltam os testes reais (ver o início deste arquivo).
 > Para o agente de código (Claude) que vai continuar o trabalho, com acesso ao checkout local do DARK POOL.
 > As seções "ESTADO ATUAL" e "BLOCO 3" abaixo são o registro de 31/10; o estado de cada bloco está em "ORDEM DE INTEGRAÇÃO" e em `docs/INTEGRACOES.md`.
 
@@ -187,7 +198,7 @@ Fonte: https://docs.alpaca.markets/reference/stockbars e https://docs.alpaca.mar
 - Plano Basic: tempo real IEX; histórico desde 2016; 200 chamadas/min; "latest 15 minutes" restritos (a página não explica o asterisco).
 - O ambiente de nuvem do agente anterior não alcançava `data.alpaca.markets` (bloqueado pelo proxy). Testes reais só no computador do usuário.
 
-#### Desenho proposto (rascunho não testado em `rascunho-bloco3-alpaca.py`)
+#### Desenho proposto (o rascunho `rascunho-bloco3-alpaca.py` foi removido em 02/11; o Bloco 3 está feito)
 - `backend/app/services/alpaca.py`: `fetch_bars()` com paginação por `next_page_token`, `feed=iex`, `adjustment=all`, passando por `providers.check_allowed/acquire/success/failure` e `single_flight`. Erros: 401/403 → `provider_auth`; 429 → pausa; 400 → mensagem curta da Alpaca. Nunca repetir cabeçalhos ou a URL completa em mensagens.
 - **Janela por sessões**, não por dias: `session_window(dia, sessões)` com o calendário do Bloco 1. Vai das N sessões antes do dia do plano até o fechamento desse dia, e nunca depois de agora menos 16 minutos (restrição do plano Basic). O Time Machine precisa das barras do próprio dia do plano: o motor recusa se a barra de entrada não existir.
 - **Conversor** para o layout do Yahoo v8 que os motores leem (`chart.result[0].meta/timestamp/indicators.quote`), com:
