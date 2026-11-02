@@ -58,6 +58,7 @@ test('every lab area opens directly and survives a reload', async ({ browser }, 
     ['/app/time-machine', 'Time Machine'],
     ['/app/analytics', 'Analytics'],
     ['/app/journal', 'Trading Journal'],
+    ['/app/congress', 'Congresso'],
     ['/app/settings', 'Configurações'],
   ] as const) {
     await page.goto(path)
@@ -67,6 +68,21 @@ test('every lab area opens directly and survives a reload', async ({ browser }, 
     expect(await overflow(page), `${path} overflows horizontally`).toBeLessThanOrEqual(16)
   }
   await ctx.close()
+})
+
+test('congress page follows the server policy in the public lab (off, no House Clerk call)', async ({ page }) => {
+  const congress: string[] = []
+  page.on('request', (r) => {
+    if (r.url().includes('/api/congress/')) congress.push(r.url())
+  })
+  await page.goto('/app/congress')
+  await expect(page.getByRole('heading', { level: 1, name: 'Congresso' })).toBeVisible()
+  await expect(page.getByText(/5 U\.S\.C\. §13107\(c\)/)).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Abrir o eFD do Senado' })).toBeVisible()
+  expect(congress).toEqual([])
+  const r = await page.request.get(`${API}/congress/ptrs?year=2026`)
+  expect(r.status()).toBe(403)
+  expect((await r.json()).detail.code).toBe('display_policy')
 })
 
 test('settings keep preferences in this browser and list no accounts', async ({ page }, info) => {

@@ -4,6 +4,7 @@ import { lazy, Suspense, useEffect, useMemo, useState, type FormEvent } from 're
 import { Link, useSearchParams } from 'react-router-dom'
 import { PageHeader } from '@/components/app/AppShell'
 import { DataTable, type Column } from '@/components/app/DataTable'
+import { FundamentalsPanel, type Fundamentals } from '@/components/app/FundamentalsPanel'
 import { JobProgress } from '@/components/app/JobProgress'
 import { Sparkline } from '@/components/app/KpiTile'
 import { CandlestickChart } from '@/components/charts/CandlestickChart'
@@ -180,6 +181,28 @@ const RANGES = [
   { value: '2y', label: '2A' },
 ] as const
 
+/** GET /api/assets/{s}/news (Bloco 7): SEC 8-K, GDELT headlines and tone, Yahoo RSS only where allowed. */
+/** GET /api/assets/{s}/profile (Bloco 8): SEC metadata; sector = SIC division. */
+type SecProfile = {
+  cik: string
+  name: string
+  exchanges: string[]
+  sic: string | null
+  sic_description: string | null
+  sector: { division: string; name: string } | null
+  sec_url: string
+}
+
+type NewsRes = {
+  items?: { id: string; title: string; link: string; time?: string | null; source?: string; kind?: string; provider?: string; form?: string; tags?: string[] }[]
+  coverage_tone?: { average: number; points: number; timespan: string; label: string } | null
+  sources?: string[]
+  errors?: string[]
+  attribution?: string | null
+  note: string | null
+  disclaimer?: string
+}
+
 type RelativeRes = {
   symbol: string
   name: string | null
@@ -253,13 +276,19 @@ function AssetDetail({ symbol, watchlists, onClose }: { symbol: string; watchlis
   })
   const news = useQuery({
     queryKey: ['news', symbol],
-    queryFn: ({ signal }) => api<{ items?: { title: string; link: string; published?: string; time?: string; source?: string; tags?: string[] }[]; note: string | null }>(`/assets/${symbol}/news`, { signal }),
+    queryFn: ({ signal }) => api<NewsRes>(`/assets/${symbol}/news`, { signal }),
     enabled: tab === 'news',
     staleTime: 300_000,
   })
+  const profile = useQuery({
+    queryKey: ['profile', symbol],
+    queryFn: ({ signal }) => api<SecProfile>(`/assets/${symbol}/profile`, { signal }),
+    retry: false,
+    staleTime: 3_600_000,
+  })
   const funda = useQuery({
     queryKey: ['fundamentals', symbol],
-    queryFn: ({ signal }) => api<Record<string, unknown>>(`/assets/${symbol}/fundamentals`, { signal }),
+    queryFn: ({ signal }) => api<Fundamentals>(`/assets/${symbol}/fundamentals`, { signal }),
     enabled: tab === 'fundamentals',
     retry: false,
   })
@@ -295,7 +324,17 @@ function AssetDetail({ symbol, watchlists, onClose }: { symbol: string; watchlis
             <h2 className="num text-2xl text-fg">{symbol}</h2>
             <DataBadge kind="delayed" />
           </div>
-          <p className="truncate text-sm text-muted">{(hidden ? rel.data?.name : c?.name) ?? (chart.isLoading || rel.isLoading ? 'Carregando…' : '')}</p>
+          <p className="truncate text-sm text-muted">{(hidden ? rel.data?.name : c?.name) ?? profile.data?.name ?? (chart.isLoading || rel.isLoading ? 'Carregando…' : '')}</p>
+          {profile.data && (
+            <p className="mt-0.5 text-[11px] text-faint">
+              {profile.data.sector ? `${profile.data.sector.name} · ` : ''}
+              {profile.data.sic ? `SIC ${profile.data.sic}${profile.data.sic_description ? ` (${profile.data.sic_description})` : ''} · ` : ''}
+              {profile.data.exchanges.length ? `${profile.data.exchanges.join(', ')} · ` : ''}
+              <a href={profile.data.sec_url} target="_blank" rel="noopener noreferrer" className="hover:text-ember">
+                CIK {profile.data.cik} (SEC)
+              </a>
+            </p>
+          )}
         </div>
         <div className="text-right">
           {!hidden && <p className="num text-2xl text-fg">{fmt.num(c?.quote.last)}</p>}
@@ -429,19 +468,34 @@ function AssetDetail({ symbol, watchlists, onClose }: { symbol: string; watchlis
                   <p className="text-sm text-faint">Nenhuma manchete nos últimos 7 dias pelas fontes configuradas.</p>
                 ) : (
                   <ul className="divide-y divide-line">
-                    {news.data!.items!.slice(0, 12).map((n) => (
-                      <li key={n.link} className="py-2.5">
-                        <a href={n.link} target="_blank" rel="noopener noreferrer" className="text-sm text-fg hover:text-ember">
-                          {n.title}
-                        </a>
+                    {news.data!.items!.slice(0, 15).map((n) => (
+                      <li key={n.id ?? n.link} className="py-2.5">
+                        <div className="flex items-start gap-2">
+                          <Badge tone={n.kind === 'filing' ? 'ember' : 'neutral'}>{n.kind === 'filing' ? (n.form ?? 'SEC') : n.provider === 'gdelt' ? 'GDELT' : 'Yahoo'}</Badge>
+                          <a href={n.link} target="_blank" rel="noopener noreferrer" className="text-sm text-fg hover:text-ember">
+                            {n.title}
+                          </a>
+                        </div>
                         <p className="mt-0.5 text-[11px] text-faint">
-                          {n.source ?? ''} {n.time ?? n.published ?? ''} {n.tags?.length ? `· ${n.tags.join(', ')}` : ''}
+                          {n.source ?? ''} {n.time ? `· ${localDateTime(n.time)}` : ''} {n.tags?.length ? `· ${n.tags.join(', ')}` : ''}
                         </p>
                       </li>
                     ))}
                   </ul>
                 )}
-                <p className="mt-2 text-[11px] text-faint">trader-news · Yahoo Finance RSS{news.data?.note ? '' : ' e SEC EDGAR 8-K'}</p>
+                {news.data?.coverage_tone && (
+                  <p className="mt-3 text-xs text-muted" title={news.data.coverage_tone.label}>
+                    Tom médio da cobertura (GDELT, {news.data.coverage_tone.timespan}): <span className="num text-fg">{fmt.num(news.data.coverage_tone.average, 2)}</span>. {news.data.coverage_tone.label}
+                  </p>
+                )}
+                {news.data?.errors?.map((e) => (
+                  <p key={e} className="mt-1 text-[11px] text-caution">
+                    {e}
+                  </p>
+                ))}
+                <p className="mt-2 text-[11px] text-faint">
+                  trader-news · fontes: {news.data?.sources?.length ? news.data.sources.join(', ') : 'nenhuma disponível'}. {news.data?.attribution ?? ''} {news.data?.disclaimer ?? ''}
+                </p>
               </>
             ))}
           {tab === 'fundamentals' &&
@@ -452,7 +506,7 @@ function AssetDetail({ symbol, watchlists, onClose }: { symbol: string; watchlis
             ) : funda.isError ? (
               <ErrorState error={funda.error} />
             ) : (
-              <pre className="num max-h-80 overflow-auto rounded-[var(--radius-md)] bg-abyss p-3 text-[11px] text-muted">{JSON.stringify(funda.data, null, 1).slice(0, 6000)}</pre>
+              funda.data && <FundamentalsPanel d={funda.data} />
             ))}
         </div>
       </div>
@@ -618,7 +672,7 @@ function ScanPanel({ watchlists, onPick, picked }: { watchlists: Watchlist[]; on
             ]}
           />
           {mode === 'orb' && (
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-[100px_minmax(140px,1fr)_minmax(110px,1fr)] gap-2">
               <Field label="Faixa">
                 {(p) => (
                   <Select {...p} value={orMinutes} onChange={(e) => setOrMinutes(Number(e.target.value))}>

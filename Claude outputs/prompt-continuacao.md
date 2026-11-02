@@ -1,18 +1,139 @@
-# Prompt de continuação — Integração dos provedores gratuitos no DARK POOL
+# Prompt de continuação — DARK POOL (estado de 02/11/2026, manhã)
 
-> Para o agente de código (Claude) que vai continuar o trabalho, com acesso ao checkout local do DARK POOL.
-> Junta o prompt de integração (versão 2) com o estado em que o trabalho parou em 31/10/2026.
-> Blocos 1, 2 e 3 no GitHub (`main`). Na branch `bloco4-entry-exit`: feed SIP como padrão da Alpaca e Bloco 4 (Entry e Exit), testados com fixtures. Teste real com chaves pendente. Próximo: Bloco 5, mas antes resolver o bloqueio de exibição descrito em "ESTADO ATUAL".
+> Cole este prompt no agente de código da outra conta, com acesso ao repositório
+> https://github.com/lorenzo-or7/dark-pool (ou ao checkout local do usuário). Este arquivo está na branch
+> `bloco4-entry-exit` em `Claude outputs/prompt-continuacao.md`; o contexto completo está no ANEXO, no fim.
+
+## Papel e regras
+
+Você é o engenheiro responsável pela camada de dados do DARK POOL (laboratório público de pesquisa quantitativa de
+ações dos EUA: FastAPI no Render, React/Vite na Vercel, Supabase). Antes de qualquer coisa, leia:
+1. O ANEXO no fim deste arquivo — papel, regras, arquitetura, provedores, pendências e o formato do relatório de cada
+   bloco ("ENTREGA DE CADA BLOCO").
+2. `docs/INTEGRACOES.md` no repositório — registro de cada integração (fontes, URLs, limites, testes). As seções do fim
+   cobrem 31/10 e 01/11 (Blocos 4 a 10).
+
+Regras que o usuário reforçou: um bloco por vez; ao fim de cada bloco rode TODAS as suítes; os motores em
+`backend/vendor/day_trader_skill` não são editados; sem push nem deploy sem autorização (o usuário autorizou
+enviar para a branch de trabalho, não para a `main`); não invente endpoints, campos ou limites — cite a documentação;
+nunca escreva chaves em código, log, commit ou documentação; responda em português do Brasil.
+
+## Onde está o código
+
+Branch **`bloco4-entry-exit`** no GitHub. O PR #2 (até o Bloco 6) já foi juntado à `main` pelo dono do repositório
+(`556cc4c`). O resto (ajuste do Scanner, Blocos 7 a 10 e a revisão final) está no **PR #3, aberto em 02/11/2026,
+aguardando revisão** — não fazer merge nem deploy sem autorização.
+- Ver: https://github.com/lorenzo-or7/dark-pool/tree/bloco4-entry-exit
+- Pull request aberto: https://github.com/lorenzo-or7/dark-pool/pull/3
+- Checkout: `git fetch origin && git checkout bloco4-entry-exit`
+
+Commits da branch (do mais antigo ao mais novo):
+| Commit | Conteúdo |
+|---|---|
+| `df5d1a9` | Alpaca: feed SIP (consolidado) como padrão (`DP_ALPACA_FEED`), IEX por configuração |
+| `7f75b76` | Bloco 4: plano ORB (Entry + Exit) com as barras do dia; stop `atr:K` |
+| `dcc8267` | Exibição em R no modo público (aprovada pelo usuário): planos, Time Machine, backtests e Scanner sem preços do provedor; Time Machine com `plan_rule` (plano calculado no servidor) |
+| `b80d202` | Bloco 5: alertas sob demanda; cotações por Alpaca snapshots (`DP_ALPACA_QUOTE_FEED=delayed_sip`) ou Yahoo; sem Stooq |
+| `be7e456` | Bloco 6: Scanner diário e ORB com barras da Alpaca (`DP_SCAN_PROVIDER`) |
+| `f59be94` | Ajuste visual do Scanner ORB (conferência visual feita) |
+| `5d63690` | Bloco 7: notícias pela SEC 8-K e GDELT (manchetes + tom); RSS do Yahoo só onde fontes não oficiais são permitidas |
+| `11b3246` | Bloco 8: perfil SEC por ativo (`GET /api/assets/{s}/profile`: CIK, bolsas, SIC, setor pela divisão SIC) |
+| `31fa928` | Remove o prompt de continuação do repositório (guardado no projeto do Claude) |
+| `711a2e3` | Bloco 9: Analyst pela SEC com o fetcher do servidor (cache em disco) e histórico de divulgação (8-K item 2.02, sem estimar datas); corrige a rota de fundamentos; aba "Resultados (SEC)" em tabela |
+| `d91e319` | Bloco 10 em andamento: backend inicial dos PTRs da Câmara (House Clerk) |
+| `dce1b1d` | Bloco 10 concluído: testes, página "Congresso", `pelosi_shown` na política, PDF validado e downloads deduplicados, documentação |
+| `dfa7790` | Revisão final dos Blocos 7 a 10: cache em disco atômico (`services/cachefile.py`) e cache ilegível tratado como ausente; janela do GDELT segue `?hours=`; histórico 8-K 2.02 tolera linhas incompletas; DocID só ASCII; remove `rascunho-bloco3-alpaca.py` |
+| (último) | Este prompt atualizado (PR #3 aberto) |
+
+## Bloco 10 (Pelosi) — CONCLUÍDO no último commit
+
+- Backend: `services/congress.py` + `routers/congress.py` (`GET /api/congress/ptrs` e `/api/congress/ptrs/{doc_id}`).
+  Ajustes do fechamento: o PDF só entra no cache se começar com `%PDF` (mesma checagem do motor) e downloads
+  iguais simultâneos viram um só (`providers.single_flight`). `display_policy.pelosi_shown` (novo) diz o que a API
+  realmente responde: sempre no demo; no público só com `DP_PELOSI_PUBLIC=true`.
+- Testes: `backend/tests/test_congress_api.py` (19 testes; oráculos = linha de comando do motor e `parse_ptr_text`;
+  PDFs são substitutos falsos marcados; cache, `since`/`limit`, sem pdftotext, 400/404/500/rede/arquivo inválido,
+  cota, concorrência, público desligado e ligado).
+- Frontend: `frontend/src/pages/app/Congress.tsx` (rota `/app/congress`, menu Pesquisa e "Mais" no celular),
+  `Congress.test.tsx`, e2e da página no modo público; Configurações usa `pelosi_shown`. Conferência visual feita
+  (desktop e celular, sem rolagem horizontal da página).
+- Documentação: seção "Pelosi: PTRs da Câmara pela House Clerk (Bloco 10)" em `docs/INTEGRACOES.md`;
+  `VENDORED.md` atualizado (só o texto; motor intacto).
+
+Testes no fim do Bloco 10 (Linux, 01/11/2026): backend 453 passed, 10 skipped; `test_public_pg.py` com Postgres 16
+local 9 passed; frontend typecheck ok, 15 testes, build ok, lint 21 avisos antigos (nenhum novo); Playwright
+14 passed, 6 skipped. Tudo só com fixtures: o ambiente de nuvem não alcança a House Clerk, a Alpaca, a SEC nem o GDELT.
+
+Pendência específica do Bloco 10: não está confirmado se o runtime Python nativo do Render tem `pdftotext`
+(https://render.com/docs/native-environments: ferramentas fora da lista exigem Docker). Teste real: abrir um PTR em
+produção e ver `readable`. Se vier `false`: migrar para Docker com `poppler-utils` ou manter só o link do PDF —
+decisão do usuário.
+
+## Comandos de teste
+
+```
+backend\.venv\Scripts\python.exe -m pytest backend
+npm --prefix frontend run typecheck
+npm --prefix frontend test
+npm --prefix frontend run build
+npm --prefix frontend run lint
+npm --prefix frontend run test:e2e
+```
+E `test_public_pg.py` com `DP_TEST_PG_URL=postgresql://postgres@127.0.0.1:PORTA/postgres` (Postgres descartável,
+nunca o Supabase). No Linux: `python -m pytest backend`; para o Playwright com um Chromium já instalado, use
+`DP_E2E_PYTHON` e `DP_E2E_CHROMIUM`.
+
+## Pendências que dependem do usuário
+
+- [ ] Chaves NOVAS da Alpaca (as antigas foram expostas) em `backend\.env`; rodar `scripts\check_alpaca.py` e
+      informar as linhas `[SIP]`, `[IEX]`, `[cotações delayed_sip]` e `[cotações iex]` (inclui o formato da resposta
+      de snapshots, que a documentação não mostra). Depois `DP_LIVE_ALPACA=1` no pytest.
+- [ ] `SEC_USER_AGENT` ("Nome email") em `backend\.env` e no Render. Sem ele ficam desligados: 8-K, GDELT
+      (o nome da empresa vem da SEC), perfil SEC e Analyst. Pergunte ao usuário; não invente.
+- [ ] Confirmar no teste real: campos do GDELT DOC 2.0, campos `sic`/`sicDescription` das submissões da SEC,
+      índice e PDFs reais da House Clerk (rodar o demo local e abrir `/app/congress`) e `pdftotext` no Render.
+- [ ] Pendências externas de termos (Alpaca em site público; parecer jurídico do Pelosi): ver o ANEXO ("PENDÊNCIAS EXTERNAS").
+
+## Revisão final do código — FEITA em 02/11/2026
+
+Ver a seção "Revisão final dos Blocos 7 a 10" em `docs/INTEGRACOES.md`. Suítes depois dela (Linux): backend
+216 passed e 10 skipped (só `backend/tests`); motores da skill 243 (`backend/vendor/day_trader_skill/tests`);
+Postgres local 9; frontend typecheck, 15 testes, build, lint 21 avisos antigos; Playwright 14 passed e 6 skipped.
+(O "453" do Bloco 10 somava backend e motores.)
+
+## Onde retomar: testes reais e revisão do PR #3
+
+Não há bloco de código pendente. Próximos passos, um de cada vez, sempre perguntando ao usuário:
+1. Testes reais no computador do usuário (Windows, checkout `C:\Users\lmors\OneDrive\Documentos\GitHub\dark-pool`):
+   `git pull` na branch, rodar todas as suítes, depois `scripts\check_alpaca.py` com as chaves novas e o demo local
+   (`/app/congress`, notícias, perfil SEC, Analyst) com `SEC_USER_AGENT` configurado. Registrar os resultados reais
+   em `docs/INTEGRACOES.md`, separados dos testes com fixtures. Corrigir só o que o teste real mostrar.
+2. Acompanhar o PR #3 (https://github.com/lorenzo-or7/dark-pool/pull/3): responder a comentários de revisão com
+   correções na branch. Não fazer merge nem deploy sem autorização.
+3. Pendências externas de termos antes de publicar (Alpaca, parecer do Pelosi) e a decisão sobre o `pdftotext`.
+
+Ao fim de cada etapa: rode todas as suítes, atualize `docs/INTEGRACOES.md`, faça commit na branch
+`bloco4-entry-exit` e entregue o relatório. Prompts e documentos de contexto para o Claude não vão para o
+repositório, exceto este arquivo, que o usuário pediu para deixar em `Claude outputs/prompt-continuacao.md`
+(atualize-o ao fim de cada etapa).
 
 ---
 
-## PAPEL
+# ANEXO — Contexto da integração dos provedores gratuitos no DARK POOL
+
+> Estado atualizado em 02/11/2026: Blocos 1 a 10 feitos e revisão do código feita; Blocos 4 a 6 na `main` (PR #2), o resto no PR #3 (aberto). Faltam os testes reais (ver o início deste arquivo).
+> Para o agente de código (Claude) que vai continuar o trabalho, com acesso ao checkout local do DARK POOL.
+> As seções "ESTADO ATUAL" e "BLOCO 3" abaixo são o registro de 31/10; o estado de cada bloco está em "ORDEM DE INTEGRAÇÃO" e em `docs/INTEGRACOES.md`.
+
+---
+
+### PAPEL
 
 Você é o engenheiro responsável pela camada de dados do DARK POOL. Sua tarefa é continuar a integração dos provedores **gratuitos** definidos abaixo, sem alterar os cálculos dos motores e sem quebrar o acesso público, o acompanhamento de jobs e a reprodutibilidade.
 
 Leia o código antes de alterar. Não presuma que algo existe porque está descrito aqui.
 
-## CONTEXTO
+### CONTEXTO
 
 - Repositório: https://github.com/lorenzo-or7/dark-pool. Blocos 1 e 2 em `9affb62`, Bloco 3 em `695bccd` (`main`). Feed SIP e Bloco 4 na branch `bloco4-entry-exit` (commits locais da sessão de 31/10; ver o relatório dessa sessão para saber se foram enviados). Checkout do usuário: `C:\Users\lmors\OneDrive\Documentos\GitHub\dark-pool`. Não descarte alterações locais.
 - Motores: módulos da day-trader-skill (https://github.com/Jakeschincariol/day-trader-skill), commit de referência `3d0f4ef`, vendorizados em `backend/vendor/day_trader_skill` e chamados por `backend/app/engines/runner.py`. Os motores **não são editados**. `trader-broker` está excluído.
@@ -23,7 +144,7 @@ Leia o código antes de alterar. Não presuma que algo existe porque está descr
 
 ---
 
-## ESTADO ATUAL (31/10/2026)
+### ESTADO ATUAL (31/10/2026)
 
 | Bloco | Situação |
 |---|---|
@@ -31,20 +152,20 @@ Leia o código antes de alterar. Não presuma que algo existe porque está descr
 | 2. Política de exibição, cotas e proveniência | Concluído, no GitHub (`9affb62`) |
 | 3. Alpaca + Time Machine | No GitHub (`695bccd`). Revisado em 31/10: feed SIP como padrão (`DP_ALPACA_FEED`), branch `bloco4-entry-exit`. Testado só com fixtures; teste real pendente |
 | 4. Entry e Exit | Implementado na branch `bloco4-entry-exit`: `POST /api/plan/orb` sem snapshot baixa só o dia; stop `atr:K`. Testado só com fixtures. Ver `docs/INTEGRACOES.md` |
-| 5 a 10 | Não iniciados |
+| 5 a 10 | Feitos em 31/10 e 01/11 na branch `bloco4-entry-exit` (ver docs/INTEGRACOES.md) |
 
-### Mudança de premissa (31/10): SIP no plano gratuito
+#### Mudança de premissa (31/10): SIP no plano gratuito
 
 A FAQ oficial da Alpaca (https://docs.alpaca.markets/us/docs/market-data-faq) diz que, sem assinatura, o SIP histórico pode ser consultado quando o `end` tem pelo menos 15 minutos. O adaptador já nunca pede dados com menos de 16 min, então o padrão passou a ser `feed=sip` (consolidado de todas as bolsas). Consequências, a confirmar no teste real:
 - As lacunas do IEX deixam de ser o caso comum (continuam medidas, nunca preenchidas).
 - A correção 2 abaixo (volume IEX no Scanner) deixa de bloquear o Bloco 6: com SIP, o volume é o consolidado. Barras diárias podem migrar para a Alpaca SIP no Bloco 6, com comparação contra o Yahoo antes de trocar.
 - Se o teste real recusar o SIP (`provider_subscription`), `DP_ALPACA_FEED=iex` volta ao comportamento anterior.
 
-### Exibição em R no modo público — resolvido em 31/10 (antes era bloqueio)
+#### Exibição em R no modo público — resolvido em 31/10 (antes era bloqueio)
 
 Proposta de gráficos aprovada pelo usuário em 31/10 e implementada na branch `bloco4-entry-exit`: com `DP_SHOW_TRIGGER_PRICES` desligado, planos, Time Machine, backtests, trades, jobs e exports saem em R e %; o plano fica no servidor (`plan_rule`); o Scanner usa `/api/assets/{s}/relative`. Detalhes em `docs/INTEGRACOES.md`.
 
-### Pendências do usuário antes do Bloco 3 funcionar com dados reais
+#### Pendências do usuário antes do Bloco 3 funcionar com dados reais
 
 - [ ] Criar **chaves novas** da Alpaca. As chaves antigas foram expostas numa conversa e devem ser revogadas. Nunca as escreva em código, log, fixture, commit ou documentação.
 - [ ] Criar `backend\.env` com `ALPACA_API_KEY_ID` e `ALPACA_API_SECRET_KEY` (o arquivo ainda não existia em 30/10).
@@ -53,7 +174,7 @@ Proposta de gráficos aprovada pelo usuário em 31/10 e implementada na branch `
 - [ ] `SEC_USER_AGENT`: não havia `.env` com esse valor. Confirmar onde está configurado ou pedir nome e e-mail do projeto.
 - [x] Proposta de gráficos do modo público aprovada e implementada (31/10).
 
-### Proposta de gráficos (aprovada e implementada em 31/10)
+#### Proposta de gráficos (aprovada e implementada em 31/10)
 
 No modo `public` (no `demo` os candles continuam):
 1. **Time Machine:** replay desenhado em R (0 na entrada, −1R no stop, +xR no alvo), sem eixo de preço. O plano ORB fica guardado no servidor e a tela mostra entrada, stop e alvo em R e em %. Isso permite ativar `DP_SHOW_TRIGGER_PRICES` sem quebrar o fluxo, que hoje envia entrada, stop e alvo em dólares.
@@ -64,11 +185,11 @@ Implementada em 31/10.
 
 ---
 
-## BLOCO 3 — REGISTRO: adaptador Alpaca + Time Machine (concluído; mantido como referência)
+### BLOCO 3 — REGISTRO: adaptador Alpaca + Time Machine (concluído; mantido como referência)
 
 Implementado como descrito abaixo, com uma mudança em 31/10: o feed padrão passou de `iex` para `sip` (ver "Mudança de premissa").
 
-### Fatos verificados na documentação (30/10/2026)
+#### Fatos verificados na documentação (30/10/2026)
 Fonte: https://docs.alpaca.markets/reference/stockbars e https://docs.alpaca.markets/us/docs/about-market-data-api.md. Confira de novo antes de codificar.
 - `GET https://data.alpaca.markets/v2/stocks/bars`; cabeçalhos `APCA-API-KEY-ID` e `APCA-API-SECRET-KEY`.
 - Parâmetros: `symbols` (lista), `timeframe` (`5Min`/`5T`, `1Day`/`1D` etc.), `start`/`end` (RFC-3339 ou AAAA-MM-DD, inclusivos), `limit` (padrão 1.000, máximo 10.000, **somando todos os símbolos**), `adjustment` (`raw` padrão, `split`, `dividend`, `spin-off`, `all`), `feed` (`sip` padrão, `iex`, `otc`, `boats`), `sort`, `page_token`, `asof`, `currency`.
@@ -77,7 +198,7 @@ Fonte: https://docs.alpaca.markets/reference/stockbars e https://docs.alpaca.mar
 - Plano Basic: tempo real IEX; histórico desde 2016; 200 chamadas/min; "latest 15 minutes" restritos (a página não explica o asterisco).
 - O ambiente de nuvem do agente anterior não alcançava `data.alpaca.markets` (bloqueado pelo proxy). Testes reais só no computador do usuário.
 
-### Desenho proposto (rascunho não testado em `rascunho-bloco3-alpaca.py`)
+#### Desenho proposto (o rascunho `rascunho-bloco3-alpaca.py` foi removido em 02/11; o Bloco 3 está feito)
 - `backend/app/services/alpaca.py`: `fetch_bars()` com paginação por `next_page_token`, `feed=iex`, `adjustment=all`, passando por `providers.check_allowed/acquire/success/failure` e `single_flight`. Erros: 401/403 → `provider_auth`; 429 → pausa; 400 → mensagem curta da Alpaca. Nunca repetir cabeçalhos ou a URL completa em mensagens.
 - **Janela por sessões**, não por dias: `session_window(dia, sessões)` com o calendário do Bloco 1. Vai das N sessões antes do dia do plano até o fechamento desse dia, e nunca depois de agora menos 16 minutos (restrição do plano Basic). O Time Machine precisa das barras do próprio dia do plano: o motor recusa se a barra de entrada não existir.
 - **Conversor** para o layout do Yahoo v8 que os motores leem (`chart.result[0].meta/timestamp/indicators.quote`), com:
@@ -91,7 +212,7 @@ Fonte: https://docs.alpaca.markets/reference/stockbars e https://docs.alpaca.mar
 - `history_sessions` (padrão 60, de 20 a 250) em `TimeMachineRequest` e `BacktestRequest`; ignorado com snapshot ou com Yahoo. Ajustar `_new_data_allowed` para checar o provedor do intervalo pedido.
 - `JobContext` ganharia um campo `data_quality` para o handler devolver a qualidade da coleta.
 
-### Testes do Bloco 3
+#### Testes do Bloco 3
 - Fixture em formato Alpaca **derivada** do arquivo TSLA da skill (identificada como derivada, não coletada). Converter de volta e rodar o Time Machine com seed 19: o resultado deve ser idêntico ao da fixture original.
 - Paginação com `next_page_token`; erros 401, 403, 429, 400 e de rede; nenhuma chave em exceções, logs ou respostas.
 - Lacunas do IEX: remover barras de algumas sessões e conferir a contagem, a exclusão de sessões e o erro claro quando a barra de entrada faltar.
@@ -102,7 +223,7 @@ Fonte: https://docs.alpaca.markets/reference/stockbars e https://docs.alpaca.mar
 
 ---
 
-## CONCLUSÃO DO RELATÓRIO DE PROVEDORES (30/10/2026)
+### CONCLUSÃO DO RELATÓRIO DE PROVEDORES (30/10/2026)
 
 Nenhum plano gratuito ou de até US$ 50/mês verificado autoriza mostrar preços ou candles brutos a visitantes anônimos. As fontes gratuitas que permitem reuso público são oficiais (SEC EDGAR, Nasdaq Trader, GDELT) ou calculadas localmente (calendário). Os termos do Yahoo proíbem a coleta automatizada e o uso comercial.
 
@@ -113,7 +234,7 @@ Por isso:
 
 As confirmações externas bloqueiam a **publicação**, não o desenvolvimento local.
 
-## PILHA DA FASE GRATUITA
+### PILHA DA FASE GRATUITA
 
 | Fonte | Uso | Módulos | Categoria |
 |---|---|---|---|
@@ -126,7 +247,7 @@ As confirmações externas bloqueiam a **publicação**, não o desenvolvimento 
 
 Fora desta etapa: Tiingo, Marketaux, FMP, Quiver e qualquer plano pago. Excluídos pelos termos: Massive (ex-Polygon) planos individuais, EODHD pessoal, Twelve Data grátis, Alpha Vantage.
 
-## CORREÇÕES DA VERIFICAÇÃO (prevalecem sobre o relatório)
+### CORREÇÕES DA VERIFICAÇÃO (prevalecem sobre o relatório)
 
 1. **Exit usa barras intradiárias.** O stop `atr:K` usa o ATR de 14 barras da sessão até a barra de entrada. Mesma fonte do Entry.
 2. **Volume do IEX não é consolidado.** O scanner diário filtra `regularMarketVolume >= 1.000.000`; com volume IEX quase tudo cai. **Atualização 31/10:** com `feed=sip` (padrão) o volume é o consolidado; confirmar no teste real antes do Bloco 6. Só se o SIP for recusado volta a valer a necessidade de recalibrar.
@@ -135,7 +256,7 @@ Fora desta etapa: Tiingo, Marketaux, FMP, Quiver e qualquer plano pago. Excluíd
 5. **Serviço dormindo interrompe jobs.** Confirme que jobs interrompidos viram falha com motivo claro.
 6. **Tiingo não foi avaliado para o Scanner** (um ticker por chamada).
 
-## POLÍTICA DE EXIBIÇÃO (implementada no Bloco 2)
+### POLÍTICA DE EXIBIÇÃO (implementada no Bloco 2)
 
 | Configuração | Padrão no `public` | Efeito |
 |---|---|---|
@@ -146,7 +267,7 @@ Fora desta etapa: Tiingo, Marketaux, FMP, Quiver e qualquer plano pago. Excluíd
 
 A política é aplicada no backend. Ocultar na interface não basta.
 
-## QUEM OBTÉM CADA ACESSO
+### QUEM OBTÉM CADA ACESSO
 
 **Categoria A — sem cadastro (você integra direto):** SEC EDGAR, GDELT, House Clerk, Nasdaq Trader, exchange_calendars.
 - SEC: User-Agent com nome e e-mail de contato; no máximo 10 requisições por segundo; cache de `companyfacts`. Se `SEC_USER_AGENT` não estiver configurado, pergunte ao usuário; não invente.
@@ -155,7 +276,7 @@ A política é aplicada no backend. Ocultar na interface não basta.
 
 **Categoria B — o usuário obtém:** só a Alpaca. Você não cria contas, não aceita termos em nome do usuário e não usa chaves de terceiros. Adaptador e testes com fixtures, provedor desativado sem chave, teste de fumaça real depois que o usuário configurar. Chave colada na conversa nunca vai para código, commit, log, fixture ou documentação: oriente a colocá-la no `.env` local e nas variáveis do Render.
 
-## ARQUITETURA (o que vale para os próximos blocos)
+### ARQUITETURA (o que vale para os próximos blocos)
 
 1. **Inspecione antes** de cada bloco e apresente a proposta antes de alterar.
 2. **Camada de provedores por tipo de dado** (barras, cotação, universo, calendário, notícias, SEC, PTRs), com interface, cadeia configurável e formato normalizado. Os motores recebem o formato que já consomem. Não altere fórmulas, gatilhos, stop, alvo, sorteio, seed nem dimensionamento.
@@ -164,7 +285,7 @@ A política é aplicada no backend. Ocultar na interface não basta.
 5. **Segredos** só em variáveis do backend; nunca `VITE_`; remova chaves de URLs, logs e erros.
 6. **Interface:** fonte, feed, horário e atraso em cada resultado; atribuições; estados claros (fonte indisponível, cota esgotada, dado atrasado, dado ausente, símbolo descartado por barras faltantes).
 
-## ORDEM DE INTEGRAÇÃO
+### ORDEM DE INTEGRAÇÃO
 
 Um bloco por vez. Pare e entregue o relatório de cada bloco antes do próximo, exceto se o usuário autorizar seguir direto.
 
@@ -174,18 +295,18 @@ Um bloco por vez. Pare e entregue o relatório de cada bloco antes do próximo, 
 4. ~~Entry e Exit (barras do dia; ATR da sessão)~~ (branch `bloco4-entry-exit`)
 5. ~~Alerts: cotação de vários símbolos por requisição; remover o Stooq~~ (branch `bloco4-entry-exit`; sob demanda, regras no navegador)
 6. ~~Scanner: diário e ORB~~ (branch `bloco4-entry-exit`; SIP = volume consolidado, sem recalibração)
-7. **News: SEC 8-K + GDELT; desligar o RSS do Yahoo em produção** ← retomar aqui
-8. Universo: metadados da SEC (CIK, bolsa, SIC como setor, após confirmar na documentação); market cap só interno; float fora
-9. Analyst: manter SEC; "próximo resultado" só como histórico do item 2.02 dos 8-K
-10. Pelosi: House Clerk com a página pública desligada até o parecer jurídico
+7. ~~News: SEC 8-K + GDELT; desligar o RSS do Yahoo em produção~~ (branch `bloco4-entry-exit`)
+8. ~~Universo: metadados da SEC~~ (branch `bloco4-entry-exit`; perfil por ativo) (CIK, bolsa, SIC como setor, após confirmar na documentação); market cap só interno; float fora
+9. ~~Analyst: manter SEC; "próximo resultado" só como histórico do item 2.02 dos 8-K~~ (branch `bloco4-entry-exit`)
+10. **Pelosi: House Clerk com a página pública desligada até o parecer jurídico** (branch `bloco4-entry-exit`; concluído em 01/11)
 
 O Yahoo só sai de cada módulo depois que o substituto passar nos testes.
 
-## TESTES
+### TESTES
 
 Unitários com fixtures identificadas; contrato com o formato dos motores; motores com dados novos comparados ao resultado anterior; política (API pública sem preços quando desligada); cota, cache, deduplicação, circuit breaker, reserva; nenhuma chave em logs, API ou bundle; fumaça real marcada `live` só com chave; suíte completa do backend (incluindo `test_public_pg.py` com Postgres local) e do frontend (`npm run typecheck`, `npm test`, `npm run build`). Registre falhas, inclusive intermitentes, com nome do teste e erro.
 
-## REGRAS
+### REGRAS
 
 - Sem scraping, sem contornar limites, sem endpoints não documentados.
 - Não invente endpoints, campos ou limites. Cite a URL da documentação usada.
@@ -194,7 +315,7 @@ Unitários com fixtures identificadas; contrato com o formato dos motores; motor
 - Sem execução periódica automática e sem envio externo de alertas.
 - Sem push e sem deploy sem autorização.
 
-## PENDÊNCIAS EXTERNAS (não bloqueiam o desenvolvimento local)
+### PENDÊNCIAS EXTERNAS (não bloqueiam o desenvolvimento local)
 
 - [ ] Alpaca: um site público pode usar o plano Basic só no servidor e mostrar sinais derivados (ticker, padrão, horário, preço do gatilho)?
 - [ ] Tiingo: o plano Commercial (US$ 50) cobre esse uso, e o preço do gatilho conta como exibição?
@@ -205,7 +326,7 @@ Unitários com fixtures identificadas; contrato com o formato dos motores; motor
 
 Inclua no relatório de cada bloco o estado das pendências que o afetam.
 
-## ENTREGA DE CADA BLOCO
+### ENTREGA DE CADA BLOCO
 
 **Antes de alterar:** problema concreto e solução proposta.
 
