@@ -11,6 +11,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   FlaskConical,
+  Landmark,
   LayoutDashboard,
   LineChart,
   MoreHorizontal,
@@ -41,6 +42,7 @@ const groups: { title: string; items: Item[] }[] = [
       { to: '/app/scanner', label: 'Market Scanner', icon: <Radar /> },
       { to: '/app/strategies', label: 'Strategy Lab', icon: <FlaskConical /> },
       { to: '/app/time-machine', label: 'Time Machine', icon: <Rewind /> },
+      { to: '/app/congress', label: 'Congresso', icon: <Landmark /> },
     ],
   },
   {
@@ -223,6 +225,7 @@ const mobileMain: Item[] = [
 const mobileMore: Item[] = [
   { to: '/app/analytics', label: 'Analytics', icon: <LineChart /> },
   { to: '/app/journal', label: 'Trading Journal', icon: <BookOpenText /> },
+  { to: '/app/congress', label: 'Congresso', icon: <Landmark /> },
   { to: '/app/settings', label: 'Configurações', icon: <Settings /> },
 ]
 

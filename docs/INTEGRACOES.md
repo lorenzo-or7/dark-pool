@@ -305,3 +305,249 @@ o motor no spark original (19 ativos); paginação e lotes; filtro de liquidez p
 barra; ORB de 19/10 às 10:15 com as mesmas 42 rupturas do motor no `wall5m` original (TSLA 364,18 às
 10:15, faixa até 362,18), em 2 lotes; corte ao vivo limitado ao atraso do plano gratuito; Yahoo só
 hoje; validação; política do modo público.
+
+---
+
+## Notícias: SEC 8-K + GDELT, Yahoo RSS só onde permitido (Bloco 7)
+
+`GET /api/assets/{s}/news?hours=168` (1 a 2160). O trader-news não foi editado: o servidor passa
+ao `collect` do motor o próprio "fetcher" (`services/news.py`), que manda cada requisição pela cota
+compartilhada, põe o `SEC_USER_AGENT` nas chamadas da SEC e responde "desligado" ao RSS do Yahoo
+quando `DP_ALLOW_UNOFFICIAL_SOURCES` está desligado (padrão do `public`). Os parsers do motor
+(`parse_sec_atom`, `tag`, `dedupe`) montam os itens.
+
+| Fonte | Como | Categoria |
+|---|---|---|
+| SEC EDGAR 8-K | `https://www.sec.gov/cgi-bin/browse-edgar?...&type=8-K&output=atom` (URL do próprio motor), com `SEC_USER_AGENT`; `company_tickers.json` baixado no máximo 1 vez por dia e guardado em disco (`DP_DATA_DIR/cache`). Cota local 300/min (a SEC publica 10/s) | A (oficial) |
+| GDELT DOC 2.0 | `GET https://api.gdeltproject.org/api/v2/doc/doc` com `query="<nome>" sourcelang:english`, `mode=ArtList` (25 manchetes, 7 dias, `sort=DateDesc`) e `mode=TimelineTone` (tom médio). Nome da empresa = título da lista da SEC sem sufixos (Inc., Corp., Co...). Cache de 15 min; cota local 10/min e, desde 09/11/2026, 1 consulta a cada 5 s no servidor (ver "Testes reais"). Cada manchete leva o link original e o veículo; atribuição "GDELT Project" na resposta e na tela | A (aberto, sem chave) |
+| Yahoo RSS | Só com `DP_ALLOW_UNOFFICIAL_SOURCES` ligado (demo local). No `public` nem é chamado | não oficial |
+
+Ressalva: a página de referência do GDELT (https://blog.gdeltproject.org/gdelt-doc-2-0-api-debuts/)
+não abre no ambiente em que isto foi escrito. Os parâmetros e campos (`articles[].url/title/
+seendate/domain/language/sourcecountry`, `timeline[].data[].value`) foram conferidos em vários
+clientes de terceiros. Confirmar no teste real.
+
+Sem `SEC_USER_AGENT`: sem 8-K e sem GDELT (o nome da empresa vem da SEC), com aviso. O tom é a
+medida do GDELT sobre o texto das notícias, mostrado como número com explicação, nunca como sinal.
+Falha de uma fonte não derruba as outras: vai para `errors`.
+
+Testes (`backend/tests/test_news_api.py`): itens da SEC e do Yahoo iguais aos do motor lendo os
+mesmos arquivos salvos da skill; GDELT (resposta ESCRITA À MÃO no formato documentado) com link,
+veículo e horário, link inseguro descartado, tom médio; consulta pelo nome da empresa; User-Agent
+nas chamadas da SEC; lista de tickers baixada uma vez e GDELT em cache; GDELT recusando sem derrubar
+a SEC; sem User-Agent; modo público sem chamar o Yahoo; ticker desconhecido; limpeza do nome.
+
+---
+
+## Universo: metadados da SEC (Bloco 8)
+
+`GET /api/assets/{s}/profile` (`services/sec_profile.py`): CIK, nome registrado, bolsas, SIC e
+descrição, setor = divisão SIC, fim do ano fiscal, categoria do emissor, estado de constituição e
+link para a página da empresa no EDGAR. Exige `SEC_USER_AGENT` (sem ele: 424). O universo de ações
+continua vindo da Nasdaq Trader (`scan.py universe`).
+
+| Item | Valor |
+|---|---|
+| CIK e nome | `https://www.sec.gov/files/company_tickers.json` (o mesmo arquivo do Bloco 7, 1 vez por dia) |
+| Bolsas, SIC, categoria | `https://data.sec.gov/submissions/CIK##########.json`, documentado em https://www.sec.gov/edgar/sec-api-documentation (nome, nomes anteriores, bolsas e tickers). Os campos `sic`, `sicDescription`, `category`, `fiscalYearEnd`, `stateOfIncorporation` são os lidos por todas as bibliotecas cliente; o arquivo de submissões salvo na skill é um trecho sem eles. Confirmar no teste real |
+| Setor | Divisão do Manual SIC (https://www.osha.gov/data/sic-manual) pelos dois primeiros dígitos: A 01–09, B 10–14, C 15–17, D 20–39, E 40–49, F 50–51, G 52–59, H 60–67, I 70–89, J 91–97, K 99. Faixas sem divisão (18–19, 68–69, 98) ficam sem setor |
+| Cache | Submissões em disco por 7 dias, sem o histórico de filings (`DP_DATA_DIR/cache/sec_submissions`) |
+| Fora | Valor de mercado (só uso interno, não calculado) e free float, conforme o relatório de provedores |
+| Frontend | Detalhe do ativo no Scanner: setor, SIC, bolsas e CIK com link para a SEC |
+
+Consumo: 1 chamada à SEC por ativo a cada 7 dias (mais a lista de tickers, 1 por dia).
+
+Testes (`backend/tests/test_sec_profile.py`): perfil a partir dos arquivos salvos da SEC na skill,
+com os campos ausentes do trecho ACRESCENTADOS À MÃO e marcados; cache em disco sem filings e sem
+nova chamada; símbolo desconhecido; erro da SEC; sem User-Agent; tabela de divisões SIC, incluindo
+os limites e as faixas sem divisão.
+
+---
+
+## Analyst: resultados reportados à SEC e histórico de divulgação (Bloco 9)
+
+`GET /api/assets/{s}/fundamentals?quarters=6` (2 a 12; `services/analyst.py`). O trader-analyst não
+foi editado: o servidor chama as funções puras do motor (`ticker_ciks`, `analyse`, `latest_filings`,
+`changes`, `stale_note`) com o próprio fetcher, que manda cada requisição pela cota da SEC com o
+`SEC_USER_AGENT` e guarda as respostas em disco (`DP_DATA_DIR/cache/sec_analyst`): companyfacts e
+submissions por 12 h, o `index.json` de um filing por 30 dias (documento arquivado não muda), a lista
+de tickers 1 vez por dia. Antes a rota rodava o motor como subprocesso e devolvia `{**lista}`, que
+quebrava (o motor imprime uma lista); isso foi corrigido, e o subprocesso inline saiu do router.
+
+| Item | Valor |
+|---|---|
+| Fontes | `https://data.sec.gov/api/xbrl/companyfacts/CIK##########.json`, `https://data.sec.gov/submissions/CIK##########.json`, `https://www.sec.gov/Archives/edgar/data/<cik>/<accession>/index.json`, `company_tickers.json` (URLs do próprio motor; https://www.sec.gov/edgar/sec-api-documentation) |
+| Saída | Trimestres (receita, margens, lucro, LPA diluído, variação anual; 4º trimestre derivado e marcado), últimos 12 meses, frases do que mudou, último 10-Q/10-K, comunicado de resultados (EX-99 do 8-K com item 2.02) e aviso quando o XBRL está atrasado |
+| "Próximo resultado" | Só histórico: `earnings_history` = 8-Ks com item 2.02 (data de arquivamento, link). Nenhuma data futura é estimada |
+| Erros | Sem `SEC_USER_AGENT` 424; ticker sem CIK 404; sem XBRL (SEC 404) 422; outros erros da SEC 502 |
+| Frontend | Aba "Resultados (SEC)" do detalhe do ativo: tabela de trimestres, mudanças, links e histórico de divulgação (antes era JSON cru) |
+
+Consumo: até 3 chamadas à SEC por empresa a cada 12 h (facts, submissions, index.json do 8-K).
+
+Testes (`backend/tests/test_analyst_api.py`, arquivos salvos da SEC na skill): resultado, filings,
+mudanças e aviso idênticos aos da linha de comando do motor offline (AAPL e KO); histórico de 8-Ks
+2.02 igual ao das submissões e sem estimativa de data; cache sem novas chamadas; erros 404, 422 e 424.
+
+---
+
+## Pelosi: PTRs da Câmara pela House Clerk (Bloco 10)
+
+`GET /api/congress/ptrs?year=&member=&since=&limit=` e `GET /api/congress/ptrs/{doc_id}?year=&filed=`
+(`services/congress.py`, `routers/congress.py`). O trader-pelosi não foi editado: o servidor baixa os
+arquivos públicos pela cota `house_clerk` e entrega os bytes e o texto às funções do próprio motor
+(`read_index_bytes`, `parse_index`, `select`, `pdf_to_text`, `parse_ptr_text`).
+
+| Item | Valor |
+|---|---|
+| Índice | `https://disclosures-clerk.house.gov/public_disc/financial-pdfs/<ANO>FD.zip` (URL do motor, `INDEX_URL`). Cache em disco por 6 h (`DP_DATA_DIR/cache/house_clerk/<ANO>FD.zip`); arquivo inválido é apagado |
+| PTR | `https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/<ANO>/<DocID>.pdf` (`PTR_URL`). Cache permanente (documento entregue não muda). Só é guardado se começar com `%PDF` (mesma checagem do motor em `_fetch_and_read`) |
+| Texto | `pdftotext -layout` (poppler) pelo `pdf_to_text` do motor. Sem o programa: resposta com `readable=false`, `rows=null`, datas e link do PDF, e um aviso |
+| Datas | `date` = operação; `notified` = aviso ao parlamentar; `filed` = data do documento (do índice ou da assinatura do PDF); `collected_at` = coleta pelo laboratório. `days_to_disclose` e `late` (> 45 dias) vêm do motor |
+| Valores | Faixas do formulário (`amount`, `amount_low`, `amount_high`); nenhum preço de provedor |
+| Senado | Não coberto: bloco `senate` com link para https://efdsearch.senate.gov/search/; o aceite do termo não é automatizado |
+| Política | No `public`, 403 `display_policy` antes de qualquer download, salvo `DP_PELOSI_PUBLIC=true` (aguarda o parecer sobre a 5 U.S.C. §13107(c)). No demo local, sempre visível. `display_policy.pelosi_shown` diz o que a API realmente responde |
+| Cota | Provedor `house_clerk` (oficial): local 6/min e 300/dia (limite publicado: não encontrado). Downloads iguais simultâneos viram um só (`single_flight`) |
+| Erros | DocID inválido 400; arquivo inexistente na House Clerk 404; HTTP ≠ 200 ou arquivo inválido 502; rede 502; cota/pausa 503 |
+| Frontend | Página "Congresso" (`/app/congress`, menu Pesquisa): lista de PTRs (parlamentar, documento, data do documento, PDF) e detalhe (data da operação, tipo, ativo/ticker, titular, faixa, dias até divulgar, "atrasado"); aviso da política e do Senado |
+
+Consumo: 1 download do índice por ano a cada 6 h; 1 download por PTR, uma única vez.
+
+**Render:** os runtimes nativos rodam Debian 12 com um conjunto fixo de ferramentas; o que não está
+incluído exige o runtime Docker (https://render.com/docs/native-environments). Não está confirmado se
+o `pdftotext` existe no runtime Python do Render. Teste real: abrir um PTR em produção e ver
+`readable`. Se vier `false`, as opções são migrar o serviço para Docker com `poppler-utils` ou manter
+só o link do PDF.
+
+Testes (`backend/tests/test_congress_api.py`, arquivos da skill em `tests/fixtures/trader-pelosi`:
+`2026FD.zip`, trecho do índice real, e textos `pdftotext -layout` de PTRs reais; os PDFs são
+substitutos FALSOS com só o cabeçalho `%PDF`, marcados no teste): índice igual ao da linha de comando
+do motor (`ptr.py index --offline ... --json`) mais `collected_at`; linhas iguais às de
+`parse_ptr_text(texto, filed)` nos quatro textos; cache de 6 h e permanente; `since` e `limit`;
+sem pdftotext (o `pdf_to_text` real com o PATH sem o programa); DocID inválido; 404, 500, rede,
+arquivo inválido; cota por minuto; downloads simultâneos; modo público desligado (403, sem download)
+e ligado com `DP_PELOSI_PUBLIC=true`. Frontend: `Congress.test.tsx` e o e2e (página no público
+mostra a política e a API responde 403).
+
+## Revisão final dos Blocos 7 a 10 (02/11/2026)
+
+Revisão do código que ainda não está na `main` (notícias, perfil SEC, Analyst e PTRs). Correções:
+
+- **Cache em disco gravado de forma atômica** (`services/cachefile.py`): SEC (lista de tickers,
+  submissions, company facts, index.json) e House Clerk (índice e PDFs) gravam num arquivo temporário
+  e trocam com `os.replace`. Um arquivo de cache ilegível (gravação interrompida) passa a ser tratado
+  como ausente e é baixado de novo, em vez de derrubar o endpoint até o cache vencer (até 7 dias no
+  perfil SEC). Uma lista de tickers da SEC em formato inesperado não entra mais no cache.
+- **Janela do GDELT segue `?hours=`** em `/api/assets/{s}/news`: antes era sempre 7 dias, mesmo com
+  `hours=2160`. Agora `timespan` = horas arredondadas para cima em dias, de 1 a 90 (`gdelt_timespan`);
+  itens mais antigos que `hours` continuam sendo cortados depois. O frontend usa o padrão (168 h = 7 dias),
+  então a tela não muda.
+- **Histórico de 8-K item 2.02 tolera linhas incompletas** no arquivo de submissions (sem accession,
+  data ou documento): a linha é pulada em vez de dar erro 500.
+- **DocID do PTR só com dígitos ASCII**: `str.isdigit()` aceitava dígitos Unicode (², dígitos árabes).
+
+Testes novos: janela do GDELT (padrão e 720 h), cache de tickers ilegível e lista inválida não
+cacheada, cache de submissions ilegível, cache do Analyst ilegível, linhas incompletas no histórico
+(trecho de submissions ESCRITO À MÃO, marcado no teste) e DocIDs com dígitos Unicode.
+
+Suítes em 02/11/2026: backend 216 passaram e 10 pulados; Postgres local 9; motores da skill 243;
+frontend typecheck, 15 testes, build, lint com os mesmos 21 avisos antigos; Playwright 14 passaram e
+6 pulados. Testes reais (Alpaca, SEC, GDELT, House Clerk) continuam pendentes: este ambiente não
+alcança esses sites.
+
+Sem mudança: a decisão sobre o `pdftotext` no Render (ver o Bloco 10). Não há PDF real de PTR no
+repositório para validar uma extração em Python puro contra o `pdftotext -layout`, então nada foi
+trocado; o caminho testável é o runtime Docker com `poppler-utils`, se o teste em produção mostrar
+`readable: false`.
+
+---
+
+## Testes reais (09/11/2026)
+
+Primeiros testes com as fontes de verdade. Até aqui tudo tinha sido testado só com fixtures. Ambiente:
+Windows 11, checkout `C:\Projetos\dark-pool`, branch `bloco4-entry-exit` a partir de `ddd20cc`, chaves
+novas da Alpaca e `SEC_USER_AGENT` (valor confirmado pelo usuário) em `backend\.env`, demo local
+(`DP_AUTH_MODE=demo`). Nenhuma chave aparece aqui nem nos logs.
+
+### Suítes nesta máquina, antes das correções (só fixtures)
+
+Backend 216 passaram e 10 pulados; motores 243; frontend typecheck, 15 testes, build, lint com os 21
+avisos antigos; Playwright 14 passaram e 6 pulados. `test_public_pg.py` não rodou: não há Postgres nem
+Docker nesta máquina. Observação de ambiente: o sandbox da sessão bloqueia a pasta temporária padrão do
+pytest (`PermissionError` em `pytest-of-<usuário>`); com `--basetemp` em outra pasta tudo passa.
+
+### Alpaca (chamadas reais)
+
+`scripts\check_alpaca.py`, TSLA em 19/10/2026:
+
+| Teste | Resultado real |
+|---|---|
+| `[SIP]` | 78 de 78 barras de 5 min, volume somado 33.701.828; primeira 09:30 (`t = 2026-10-19T13:30:00Z`), última 15:55. "Confere: t é o início da barra" |
+| `[IEX]` | 78 de 78 barras, volume somado 793.836 (~2,4% do SIP); mesmos horários |
+| `[cotações delayed_sip]` | Formato "chaves por símbolo no topo" (sem envelope `snapshots`). TSLA e SPY numa requisição; último negócio às 20:40:03Z |
+| `[cotações iex]` | Mesmo formato; último negócio às 20:55:03Z (o `delayed_sip` vem 15 min atrás) |
+
+`DP_LIVE_ALPACA=1 pytest backend/tests/test_alpaca.py::test_live_alpaca_smoke`: passou (20 sessões de
+SPY encerradas e completas pelo adaptador do servidor, primeira barra 09:30, nenhuma chave no texto).
+
+Confirmado: o plano gratuito serve o SIP com mais de 15 min sem recusa de assinatura (o padrão
+`DP_ALPACA_FEED=sip` fica); `t` é o início da barra; o parser de snapshots aceita o formato real.
+Não confirmado: a perda típica do IEX (um dia e um ativo só, completo); a janela do teste ao vivo
+atravessa a troca para o horário de inverno (01/11) e as 20 sessões vieram completas, mas o teste só
+confere o horário da primeira barra, que é de outubro.
+
+### SEC (chamadas reais pelo demo local)
+
+| Rota | Resultado real |
+|---|---|
+| `GET /api/assets/{AAPL,KO}/profile` | 200. Os campos `sic`, `sicDescription`, `category`, `fiscalYearEnd`, `stateOfIncorporation` existem nas submissões reais (AAPL: SIC 3571, Nasdaq, "Large accelerated filer"; KO: SIC 2080, NYSE) |
+| `GET /api/assets/{AAPL,KO}/fundamentals?quarters=6` | 200. Trimestres, 12 meses, último 10-K/10-Q, 8-K 2.02 com o EX-99 e histórico de divulgação. 3 requisições à SEC por empresa (`sec.requests = 3`), como estimado |
+| `GET /api/assets/AAPL/news` (parte SEC) | 8-K de 02/11/2026 com itens 2.02 e 9.01, marcado "earnings" |
+
+### House Clerk (chamadas reais pelo demo local)
+
+Índice `2026FD.zip`: 457 documentos. `/app/congress` com "pelosi": 4 PTRs. PDFs reais lidos
+(`readable: true`) com o `pdftotext` desta máquina, que é o **xpdf 4.06** do Git for Windows, não o
+poppler. Defeito encontrado e corrigido (abaixo): a faixa de valor quebrada em duas linhas saía cortada.
+
+### GDELT (chamadas reais)
+
+Os campos `articles[].url/title/seendate/domain/language/sourcecountry` estão confirmados (resposta 200
+real). A API respondeu HTTP 429 com o corpo "Please limit requests to one every 5 seconds..." — é o
+limite que o próprio GDELT informa na resposta; a página de referência continua sem abrir aqui.
+
+Consultas `ArtList` feitas deste computador em 09/11/2026 (todas com pelo menos 45 s de intervalo
+entre si, exceto o tom logo depois das manchetes na 3ª): 1ª backend 429; 2ª diagnóstico direto 429;
+3ª diagnóstico direto 200; 4ª backend 200 (o tom, logo em seguida, 429); 5ª backend, já com a
+correção, 429; 6ª backend, depois de 2 min sem chamadas, 429. **Hipótese, não confirmada:** o GDELT
+recusa também por outro critério além dos 5 s (carga do serviço ou limite por IP numa janela maior).
+O intervalo de 5 s resolve o caso confirmado (tom logo depois das manchetes); a disponibilidade do
+GDELT para este IP continua instável e precisa ser observada de novo, de preferência do Render.
+
+### Correções feitas a partir do teste real
+
+1. **Intervalo de 5 s entre consultas ao GDELT** (`providers.py`: `min_interval_s`, campo novo de
+   `Provider`). Antes, a busca de notícias fazia `ArtList` e `TimelineTone` em seguida; no teste real
+   as manchetes vieram e o tom levou 429. Agora cada consulta ao GDELT espera a sua vez (fila única no
+   servidor, para todos os visitantes); se a espera passar de 15 s, a consulta é recusada com
+   `rate_limited` e não é enviada. Efeito: uma busca de notícias sem cache leva pelo menos 5 s a mais.
+2. **Atribuição do GDELT junto com as manchetes** (`news.py`). Se o tom falhava depois das manchetes,
+   elas apareciam sem a atribuição (`attribution: null`). Agora "GDELT" entra em `sources` assim que as
+   manchetes chegam, e a falha do tom vira o erro "GDELT (tom da cobertura): ...".
+3. **Faixa de valor do PTR com o texto do xpdf** (`congress.py`: `join_wrapped_amounts`, antes do
+   `parse_ptr_text` do motor, que não foi editado). O xpdf põe uma linha em branco entre "$500,001 -" e
+   "$1,000,000"; o motor para de ler a linha ali. O texto do poppler (o da fixture da skill para o mesmo
+   PTR 20035143) não tem essa linha e o motor lê a faixa inteira; a função não muda nada nele (testado
+   nos quatro textos). Conferido com o PDF real: "REOF XXV, LLC" passou de "$500,001 -" a
+   "$500,001 - $1,000,000".
+
+Testes novos (fixtures): tom recusado mantém manchetes e atribuição; espera de 5 s entre `ArtList` e
+`TimelineTone` (relógio simulado, nada dorme de verdade nos testes); fila longa recusada; a função do
+PTR não muda os textos do poppler; texto no estilo xpdf (DERIVADO da fixture, marcado) dá as mesmas
+linhas que o poppler.
+
+### Limitações vistas no teste real (sem correção)
+
+- **Relevância do GDELT**: a busca pelo nome limpo da SEC ("Apple") trouxe manchetes sem relação com a
+  empresa (desfile da Macy's, uma matéria da Vogue). Nomes genéricos geram ruído. Mudar a consulta é
+  decisão de produto.
+- **`pdftotext` no Render**: este teste usou o xpdf do Windows; não diz nada sobre o Render (ver o Bloco 10).

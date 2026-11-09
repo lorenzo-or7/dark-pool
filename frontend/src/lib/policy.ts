@@ -7,6 +7,8 @@ export type DisplayPolicy = {
   show_raw_prices: boolean
   show_trigger_prices: boolean
   pelosi_public: boolean
+  /** What /api/congress answers: always in the local demo, in the public lab only with DP_PELOSI_PUBLIC=true. */
+  pelosi_shown?: boolean
   allow_unofficial_sources: boolean
   mode: string
   note: string | null
