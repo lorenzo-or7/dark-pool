@@ -58,6 +58,9 @@ class Provider:
     integrated: bool = True
     needs_key: bool = False
     unofficial: bool = False
+    # Shortest gap between two calls, server-wide (None = no gap). A call waits for its turn, up to
+    # MAX_SPACING_WAIT_S; beyond that it is refused, never sent early.
+    min_interval_s: float | None = None
 
 
 PROVIDERS: dict[str, Provider] = {p.id: p for p in (
@@ -70,7 +73,9 @@ PROVIDERS: dict[str, Provider] = {p.id: p for p in (
     Provider("gdelt", "GDELT Project (DOC 2.0)", "Manchetes da imprensa e tom da cobertura (News)", "open",
              "Índice de notícias atualizado a cada ~15 min; janela de cerca de 3 meses",
              "https://www.gdeltproject.org/about.html#termsofuse", "Fonte: GDELT Project (gdeltproject.org)",
-             per_minute=10, per_day=2000, published_limit="sem chave; limite não publicado na referência lida (local: 10/min)"),
+             per_minute=10, per_day=2000, min_interval_s=5.0,
+             published_limit="uma requisição a cada 5 s (texto da resposta HTTP 429 da própria API, 09/11/2026); "
+                             "local: 1 a cada 5 s e 10/min"),
     Provider("house_clerk", "House Clerk (divulgações financeiras)", "PTRs da Câmara dos EUA (Pelosi)", "official",
              "Divulgação pública dias ou semanas depois da operação (STOCK Act); valores em faixas",
              "https://disclosures-clerk.house.gov/FinancialDisclosure", "Fonte: Office of the Clerk, U.S. House of Representatives",
@@ -135,6 +140,11 @@ def intraday_summary() -> dict:
 
 FAILURES_TO_PAUSE = 3
 PAUSE_S = {"rate_limited": 120, "error": 30}
+MAX_SPACING_WAIT_S = 15.0
+
+# The clock and the wait used by min_interval_s (tests replace both, so nothing really sleeps).
+_clock = time.monotonic
+_sleep = time.sleep
 
 
 @dataclass
@@ -147,6 +157,7 @@ class _Gate:
     pause_reason: str | None = None
     last_success: float | None = None
     last_error: str | None = None
+    next_slot: float = 0.0          # earliest _clock() time of the next call (min_interval_s)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -187,10 +198,12 @@ def check_allowed(pid: str) -> Provider:
 
 
 def acquire(pid: str, cost: int = 1) -> None:
-    """Spend `cost` calls of the provider's quota, or raise ProviderUnavailable."""
+    """Spend `cost` calls of the provider's quota, or raise ProviderUnavailable. With
+    `min_interval_s`, also wait for this call's turn, so calls from every visitor stay spaced."""
     p = check_allowed(pid)
     g = _gate(pid)
     now = time.monotonic()
+    wait = 0.0
     with g.lock:
         if g.paused_until > now:
             wait = int(g.paused_until - now) + 1
@@ -209,8 +222,20 @@ def acquire(pid: str, cost: int = 1) -> None:
             wait = int(60 - (now - g.minute[0])) + 1 if g.minute else 60
             raise ProviderUnavailable(pid, "rate_limited",
                                       f"Muitas consultas a {p.name} neste minuto. Tente em {wait} s.", wait)
+        if p.min_interval_s:
+            clock = _clock()
+            slot = max(clock, g.next_slot)
+            wait = slot - clock
+            if wait > MAX_SPACING_WAIT_S:
+                retry = int(wait) + 1
+                raise ProviderUnavailable(pid, "rate_limited",
+                                          f"{p.name} aceita uma consulta a cada {p.min_interval_s:g} s e há outras "
+                                          f"na fila. Tente em {retry} s.", retry)
+            g.next_slot = slot + p.min_interval_s * cost
         g.minute.extend([now] * cost)
         g.day_count += cost
+    if wait > 0:
+        _sleep(wait)
 
 
 def success(pid: str) -> None:

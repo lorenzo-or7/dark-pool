@@ -306,8 +306,12 @@ def build(symbol: str, hours: int = 168) -> dict:
                 it["ticker"] = symbol
                 it["time"] = nw.parse_time(it["time"]) if it["time"] else None
             items += g
-            tone = gdelt_tone(name, span)
+            # GDELT is cited as soon as its headlines are in the answer, even if the tone fails next.
             sources.append("GDELT")
+            try:
+                tone = gdelt_tone(name, span)
+            except NewsError as e:
+                errors.append(f"GDELT (tom da cobertura): {e.message}")
         except NewsError as e:
             errors.append(f"GDELT: {e.message}")
     elif ua and company is None:

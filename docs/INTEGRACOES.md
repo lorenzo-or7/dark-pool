@@ -319,7 +319,7 @@ quando `DP_ALLOW_UNOFFICIAL_SOURCES` está desligado (padrão do `public`). Os p
 | Fonte | Como | Categoria |
 |---|---|---|
 | SEC EDGAR 8-K | `https://www.sec.gov/cgi-bin/browse-edgar?...&type=8-K&output=atom` (URL do próprio motor), com `SEC_USER_AGENT`; `company_tickers.json` baixado no máximo 1 vez por dia e guardado em disco (`DP_DATA_DIR/cache`). Cota local 300/min (a SEC publica 10/s) | A (oficial) |
-| GDELT DOC 2.0 | `GET https://api.gdeltproject.org/api/v2/doc/doc` com `query="<nome>" sourcelang:english`, `mode=ArtList` (25 manchetes, 7 dias, `sort=DateDesc`) e `mode=TimelineTone` (tom médio). Nome da empresa = título da lista da SEC sem sufixos (Inc., Corp., Co...). Cache de 15 min; cota local 10/min. Cada manchete leva o link original e o veículo; atribuição "GDELT Project" na resposta e na tela | A (aberto, sem chave) |
+| GDELT DOC 2.0 | `GET https://api.gdeltproject.org/api/v2/doc/doc` com `query="<nome>" sourcelang:english`, `mode=ArtList` (25 manchetes, 7 dias, `sort=DateDesc`) e `mode=TimelineTone` (tom médio). Nome da empresa = título da lista da SEC sem sufixos (Inc., Corp., Co...). Cache de 15 min; cota local 10/min e, desde 09/11/2026, 1 consulta a cada 5 s no servidor (ver "Testes reais"). Cada manchete leva o link original e o veículo; atribuição "GDELT Project" na resposta e na tela | A (aberto, sem chave) |
 | Yahoo RSS | Só com `DP_ALLOW_UNOFFICIAL_SOURCES` ligado (demo local). No `public` nem é chamado | não oficial |
 
 Ressalva: a página de referência do GDELT (https://blog.gdeltproject.org/gdelt-doc-2-0-api-debuts/)
@@ -458,3 +458,96 @@ Sem mudança: a decisão sobre o `pdftotext` no Render (ver o Bloco 10). Não h�
 repositório para validar uma extração em Python puro contra o `pdftotext -layout`, então nada foi
 trocado; o caminho testável é o runtime Docker com `poppler-utils`, se o teste em produção mostrar
 `readable: false`.
+
+---
+
+## Testes reais (09/11/2026)
+
+Primeiros testes com as fontes de verdade. Até aqui tudo tinha sido testado só com fixtures. Ambiente:
+Windows 11, checkout `C:\Projetos\dark-pool`, branch `bloco4-entry-exit` a partir de `ddd20cc`, chaves
+novas da Alpaca e `SEC_USER_AGENT` (valor confirmado pelo usuário) em `backend\.env`, demo local
+(`DP_AUTH_MODE=demo`). Nenhuma chave aparece aqui nem nos logs.
+
+### Suítes nesta máquina, antes das correções (só fixtures)
+
+Backend 216 passaram e 10 pulados; motores 243; frontend typecheck, 15 testes, build, lint com os 21
+avisos antigos; Playwright 14 passaram e 6 pulados. `test_public_pg.py` não rodou: não há Postgres nem
+Docker nesta máquina. Observação de ambiente: o sandbox da sessão bloqueia a pasta temporária padrão do
+pytest (`PermissionError` em `pytest-of-<usuário>`); com `--basetemp` em outra pasta tudo passa.
+
+### Alpaca (chamadas reais)
+
+`scripts\check_alpaca.py`, TSLA em 19/10/2026:
+
+| Teste | Resultado real |
+|---|---|
+| `[SIP]` | 78 de 78 barras de 5 min, volume somado 33.701.828; primeira 09:30 (`t = 2026-10-19T13:30:00Z`), última 15:55. "Confere: t é o início da barra" |
+| `[IEX]` | 78 de 78 barras, volume somado 793.836 (~2,4% do SIP); mesmos horários |
+| `[cotações delayed_sip]` | Formato "chaves por símbolo no topo" (sem envelope `snapshots`). TSLA e SPY numa requisição; último negócio às 20:40:03Z |
+| `[cotações iex]` | Mesmo formato; último negócio às 20:55:03Z (o `delayed_sip` vem 15 min atrás) |
+
+`DP_LIVE_ALPACA=1 pytest backend/tests/test_alpaca.py::test_live_alpaca_smoke`: passou (20 sessões de
+SPY encerradas e completas pelo adaptador do servidor, primeira barra 09:30, nenhuma chave no texto).
+
+Confirmado: o plano gratuito serve o SIP com mais de 15 min sem recusa de assinatura (o padrão
+`DP_ALPACA_FEED=sip` fica); `t` é o início da barra; o parser de snapshots aceita o formato real.
+Não confirmado: a perda típica do IEX (um dia e um ativo só, completo); a janela do teste ao vivo
+atravessa a troca para o horário de inverno (01/11) e as 20 sessões vieram completas, mas o teste só
+confere o horário da primeira barra, que é de outubro.
+
+### SEC (chamadas reais pelo demo local)
+
+| Rota | Resultado real |
+|---|---|
+| `GET /api/assets/{AAPL,KO}/profile` | 200. Os campos `sic`, `sicDescription`, `category`, `fiscalYearEnd`, `stateOfIncorporation` existem nas submissões reais (AAPL: SIC 3571, Nasdaq, "Large accelerated filer"; KO: SIC 2080, NYSE) |
+| `GET /api/assets/{AAPL,KO}/fundamentals?quarters=6` | 200. Trimestres, 12 meses, último 10-K/10-Q, 8-K 2.02 com o EX-99 e histórico de divulgação. 3 requisições à SEC por empresa (`sec.requests = 3`), como estimado |
+| `GET /api/assets/AAPL/news` (parte SEC) | 8-K de 02/11/2026 com itens 2.02 e 9.01, marcado "earnings" |
+
+### House Clerk (chamadas reais pelo demo local)
+
+Índice `2026FD.zip`: 457 documentos. `/app/congress` com "pelosi": 4 PTRs. PDFs reais lidos
+(`readable: true`) com o `pdftotext` desta máquina, que é o **xpdf 4.06** do Git for Windows, não o
+poppler. Defeito encontrado e corrigido (abaixo): a faixa de valor quebrada em duas linhas saía cortada.
+
+### GDELT (chamadas reais)
+
+Os campos `articles[].url/title/seendate/domain/language/sourcecountry` estão confirmados (resposta 200
+real). A API respondeu HTTP 429 com o corpo "Please limit requests to one every 5 seconds..." — é o
+limite que o próprio GDELT informa na resposta; a página de referência continua sem abrir aqui.
+
+Consultas `ArtList` feitas deste computador em 09/11/2026 (todas com pelo menos 45 s de intervalo
+entre si, exceto o tom logo depois das manchetes na 3ª): 1ª backend 429; 2ª diagnóstico direto 429;
+3ª diagnóstico direto 200; 4ª backend 200 (o tom, logo em seguida, 429); 5ª backend, já com a
+correção, 429; 6ª backend, depois de 2 min sem chamadas, 429. **Hipótese, não confirmada:** o GDELT
+recusa também por outro critério além dos 5 s (carga do serviço ou limite por IP numa janela maior).
+O intervalo de 5 s resolve o caso confirmado (tom logo depois das manchetes); a disponibilidade do
+GDELT para este IP continua instável e precisa ser observada de novo, de preferência do Render.
+
+### Correções feitas a partir do teste real
+
+1. **Intervalo de 5 s entre consultas ao GDELT** (`providers.py`: `min_interval_s`, campo novo de
+   `Provider`). Antes, a busca de notícias fazia `ArtList` e `TimelineTone` em seguida; no teste real
+   as manchetes vieram e o tom levou 429. Agora cada consulta ao GDELT espera a sua vez (fila única no
+   servidor, para todos os visitantes); se a espera passar de 15 s, a consulta é recusada com
+   `rate_limited` e não é enviada. Efeito: uma busca de notícias sem cache leva pelo menos 5 s a mais.
+2. **Atribuição do GDELT junto com as manchetes** (`news.py`). Se o tom falhava depois das manchetes,
+   elas apareciam sem a atribuição (`attribution: null`). Agora "GDELT" entra em `sources` assim que as
+   manchetes chegam, e a falha do tom vira o erro "GDELT (tom da cobertura): ...".
+3. **Faixa de valor do PTR com o texto do xpdf** (`congress.py`: `join_wrapped_amounts`, antes do
+   `parse_ptr_text` do motor, que não foi editado). O xpdf põe uma linha em branco entre "$500,001 -" e
+   "$1,000,000"; o motor para de ler a linha ali. O texto do poppler (o da fixture da skill para o mesmo
+   PTR 20035143) não tem essa linha e o motor lê a faixa inteira; a função não muda nada nele (testado
+   nos quatro textos). Conferido com o PDF real: "REOF XXV, LLC" passou de "$500,001 -" a
+   "$500,001 - $1,000,000".
+
+Testes novos (fixtures): tom recusado mantém manchetes e atribuição; espera de 5 s entre `ArtList` e
+`TimelineTone` (relógio simulado, nada dorme de verdade nos testes); fila longa recusada; a função do
+PTR não muda os textos do poppler; texto no estilo xpdf (DERIVADO da fixture, marcado) dá as mesmas
+linhas que o poppler.
+
+### Limitações vistas no teste real (sem correção)
+
+- **Relevância do GDELT**: a busca pelo nome limpo da SEC ("Apple") trouxe manchetes sem relação com a
+  empresa (desfile da Macy's, uma matéria da Vogue). Nomes genéricos geram ruído. Mudar a consulta é
+  decisão de produto.
+- **`pdftotext` no Render**: este teste usou o xpdf do Windows; não diz nada sobre o Render (ver o Bloco 10).

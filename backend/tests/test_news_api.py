@@ -39,6 +39,7 @@ class Net:
     def __init__(self, gdelt: object = None):
         self.sec, self.http = [], []
         self.gdelt = gdelt
+        self.tone: object = None          # an httpx.Response here answers only the TimelineTone call
 
     def sec_get(self, url: str, ua: str) -> httpx.Response:
         self.sec.append((url, ua))
@@ -58,6 +59,8 @@ class Net:
         if "gdeltproject" in url:
             if isinstance(self.gdelt, httpx.Response):
                 return self.gdelt
+            if isinstance(self.tone, httpx.Response) and params["mode"] == "TimelineTone":
+                return self.tone
             body = GDELT_ARTICLES if params["mode"] == "ArtList" else GDELT_TONE
             return httpx.Response(200, text=json.dumps(body), request=req)
         raise AssertionError(url)
@@ -133,6 +136,38 @@ def test_gdelt_refusal_keeps_the_rest(api: TestClient, net: Net) -> None:
     assert any(e.startswith("GDELT:") and "limit" in e for e in b["errors"])
     assert any(it["id"].startswith("sec:") for it in b["items"]) and b["coverage_tone"] is None
     assert "GDELT" not in b["sources"] and b["attribution"] is None
+
+
+def test_tone_refused_keeps_headlines_cited(api: TestClient, net: Net) -> None:
+    """Real test, 09/11/2026: ArtList answered and TimelineTone got HTTP 429 right after. The
+    headlines stayed on screen without the GDELT attribution. Now GDELT is cited with its headlines."""
+    net.tone = httpx.Response(429, text="Please limit requests to one every 5 seconds.",
+                              request=httpx.Request("GET", "https://api.gdeltproject.org/api/v2/doc/doc"))
+    b = api.get("/api/assets/AAPL/news?hours=2160", headers=DEMO).json()
+    assert any(it["id"].startswith("gdelt:") for it in b["items"])
+    assert "GDELT" in b["sources"] and b["attribution"].startswith("Manchetes e tom: GDELT")
+    assert b["coverage_tone"] is None
+    assert [e for e in b["errors"] if e.startswith("GDELT")] == [
+        "GDELT (tom da cobertura): O GDELT está limitando requisições (HTTP 429). Tente em um minuto."]
+
+
+def test_gdelt_calls_are_spaced_five_seconds(api: TestClient, net: Net, no_real_spacing_waits: list[float]) -> None:
+    """GDELT's own 429 answer asks for one request every 5 seconds: ArtList goes at once, the tone
+    waits its turn (on the tests' simulated clock)."""
+    b = api.get("/api/assets/AAPL/news?hours=2160", headers=DEMO).json()
+    assert b["errors"] == [] and b["coverage_tone"] is not None
+    assert len(no_real_spacing_waits) == 1 and 4.5 < no_real_spacing_waits[0] <= 5.0
+
+
+def test_gdelt_spacing_refuses_a_long_queue(settings_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import providers
+    monkeypatch.setattr(providers, "_sleep", lambda s: None)                 # the clock does not move
+    for _ in range(4):                                                       # waits 0, 5, 10 and 15 s
+        providers.acquire("gdelt")
+    with pytest.raises(providers.ProviderUnavailable) as e:
+        providers.acquire("gdelt")                                           # 20 s > 15 s: refused, not sent
+    assert e.value.code == "rate_limited" and "a cada 5 s" in e.value.message and e.value.retry_after >= 20
+    assert providers.PROVIDERS["sec_edgar"].min_interval_s is None
 
 
 def test_without_user_agent_no_sec_and_no_gdelt(settings_env: Path, net: Net) -> None:

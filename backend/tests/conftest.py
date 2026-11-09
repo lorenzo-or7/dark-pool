@@ -23,6 +23,24 @@ def no_real_alpaca_keys(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(k, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def no_real_spacing_waits(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Providers with a minimum gap between calls (GDELT: 5 s) wait on a simulated clock in the
+    tests: each wait is recorded here and moves that clock forward, nothing really sleeps."""
+    from app.services import providers
+    waits: list[float] = []
+    offset = [0.0]
+    real = time.monotonic
+
+    def fake_sleep(s: float) -> None:
+        waits.append(s)
+        offset[0] += max(0.0, s)
+
+    monkeypatch.setattr(providers, "_clock", lambda: real() + offset[0])
+    monkeypatch.setattr(providers, "_sleep", fake_sleep)
+    return waits
+
+
 @pytest.fixture()
 def settings_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("DP_DATA_DIR", str(tmp_path / "data"))

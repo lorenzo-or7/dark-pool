@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -208,6 +209,35 @@ def test_report_known_values_and_late_flag(house: tuple[TestClient, House]) -> N
     # a later document date makes every row late (> 45 days), from the engine's rule
     d = c.get("/api/congress/ptrs/20035590", params={"year": 2026, "filed": "2026-11-15"}, headers=DEMO).json()
     assert d["rows"] and all(x["late"] for x in d["rows"])
+
+
+def _xpdf_style(text: str) -> str:
+    """DERIVED, not collected: the poppler text of the skill with a blank line after each amount that stops
+    at "-", which is how xpdf's pdftotext -layout (Git for Windows) laid out the real PTR 20035143 on
+    09/11/2026."""
+    return re.sub(r"(\$[\d,]+ -)\n", r"\1\n\n", text)
+
+
+def test_join_wrapped_amounts_changes_nothing_in_poppler_text() -> None:
+    from app.services.congress import join_wrapped_amounts
+    for name in TEXTS.values():
+        text = (FIX / name).read_text(encoding="utf-8")
+        assert join_wrapped_amounts(text) == text
+
+
+def test_xpdf_blank_line_keeps_the_whole_range(house: tuple[TestClient, House], monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services import congress
+    poppler = (FIX / TEXTS["20035143"]).read_text(encoding="utf-8")
+    xpdf = _xpdf_style(poppler)
+    assert xpdf != poppler
+    cut = [r for r in engine().parse_ptr_text(xpdf, "2026-08-21")["rows"] if r["asset"] == "REOF XXV, LLC"]
+    assert cut[0]["amount"] == "$500,001 -" and cut[0]["amount_high"] is None    # the engine alone cuts it
+    monkeypatch.setattr(congress, "_pdf_text", lambda p: xpdf)
+    c, _ = house
+    d = c.get("/api/congress/ptrs/20035143", params={"year": 2026, "filed": "2026-08-21"}, headers=DEMO).json()
+    assert d["rows"] == engine().parse_ptr_text(poppler, "2026-08-21")["rows"]
+    reof = next(r for r in d["rows"] if r["asset"] == "REOF XXV, LLC")
+    assert (reof["amount"], reof["amount_low"], reof["amount_high"]) == ("$500,001 - $1,000,000", 500001, 1000000)
 
 
 def test_pdf_cached_for_good(house: tuple[TestClient, House], settings_env: Path) -> None:

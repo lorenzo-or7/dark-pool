@@ -21,6 +21,7 @@ legal review of 5 U.S.C. 13107(c)); the local demo shows them.
 from __future__ import annotations
 
 import datetime as dt
+import re
 import time
 from pathlib import Path
 
@@ -120,6 +121,35 @@ def _pdf_text(path: Path) -> str | None:
     return load_module("pelosi").pdf_to_text(str(path))
 
 
+_OPEN_AMOUNT = re.compile(r"\$[\d,]+\s+-$")
+_AMOUNT_TAIL = re.compile(r"\$[\d,]+")
+
+
+def join_wrapped_amounts(text: str) -> str:
+    """Remove the blank lines between a row whose amount range stops at "-" and the line that ends
+    with the rest of the range.
+
+    The form wraps long ranges ("$500,001 -" / "$1,000,000"). poppler's `pdftotext -layout` puts the
+    second half on the very next line and the engine's parse_ptr_text joins them. xpdf's pdftotext
+    (the one Git for Windows ships) puts a blank line in between, the engine stops reading the row
+    there and the range comes out as "$500,001 -" (seen on PTR 20035143, 09/11/2026). poppler's text
+    has no such blank line, so this changes nothing there."""
+    lines = text.splitlines(keepends=True)
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        out.append(lines[i])
+        if _OPEN_AMOUNT.search(lines[i].rstrip()):
+            j = i + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            if j > i + 1 and j < len(lines) and _AMOUNT_TAIL.fullmatch(re.split(r"\s{2,}", lines[j].strip())[-1]):
+                i = j                       # skip the blank lines; the continuation comes next
+                continue
+        i += 1
+    return "".join(out)
+
+
 def report(doc_id: str, year: int, filed: str | None = None) -> dict:
     require_allowed()
     if not (doc_id.isascii() and doc_id.isdigit()) or len(doc_id) > 12:
@@ -140,7 +170,7 @@ def report(doc_id: str, year: int, filed: str | None = None) -> dict:
     if text is None:
         return {**out, "filed": filed, "rows": None, "readable": False,
                 "note": "O servidor não tem o pdftotext (poppler) para ler o PDF. Abra o documento pelo link."}
-    parsed = pt.parse_ptr_text(text, filed)
+    parsed = pt.parse_ptr_text(join_wrapped_amounts(text), filed)
     return {**out, "readable": True, "name": parsed.get("name"), "status": parsed.get("status"),
             "district": parsed.get("district"), "filed": parsed.get("filed"), "rows": parsed.get("rows") or [],
             "dates_note": "date = data da operação; notified = data em que o parlamentar foi avisado; filed = data do "

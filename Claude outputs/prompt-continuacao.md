@@ -1,4 +1,4 @@
-# Prompt de continuação — DARK POOL (estado de 02/11/2026, manhã)
+# Prompt de continuação — DARK POOL (estado de 09/11/2026)
 
 > Cole este prompt no agente de código da outra conta, com acesso ao repositório
 > https://github.com/lorenzo-or7/dark-pool (ou ao checkout local do usuário). Este arquivo está na branch
@@ -43,7 +43,8 @@ Commits da branch (do mais antigo ao mais novo):
 | `d91e319` | Bloco 10 em andamento: backend inicial dos PTRs da Câmara (House Clerk) |
 | `dce1b1d` | Bloco 10 concluído: testes, página "Congresso", `pelosi_shown` na política, PDF validado e downloads deduplicados, documentação |
 | `dfa7790` | Revisão final dos Blocos 7 a 10: cache em disco atômico (`services/cachefile.py`) e cache ilegível tratado como ausente; janela do GDELT segue `?hours=`; histórico 8-K 2.02 tolera linhas incompletas; DocID só ASCII; remove `rascunho-bloco3-alpaca.py` |
-| (último) | Este prompt atualizado (PR #3 aberto) |
+| `ddd20cc` | Este prompt atualizado (PR #3 aberto) |
+| (último) | Testes reais de 09/11 (Alpaca, SEC, House Clerk, GDELT) e três correções: intervalo de 5 s no GDELT (`min_interval_s`), atribuição do GDELT junto com as manchetes, faixa do PTR com o texto do xpdf (`join_wrapped_amounts`) |
 
 ## Bloco 10 (Pelosi) — CONCLUÍDO no último commit
 
@@ -85,13 +86,16 @@ nunca o Supabase). No Linux: `python -m pytest backend`; para o Playwright com u
 
 ## Pendências que dependem do usuário
 
-- [ ] Chaves NOVAS da Alpaca (as antigas foram expostas) em `backend\.env`; rodar `scripts\check_alpaca.py` e
-      informar as linhas `[SIP]`, `[IEX]`, `[cotações delayed_sip]` e `[cotações iex]` (inclui o formato da resposta
-      de snapshots, que a documentação não mostra). Depois `DP_LIVE_ALPACA=1` no pytest.
-- [ ] `SEC_USER_AGENT` ("Nome email") em `backend\.env` e no Render. Sem ele ficam desligados: 8-K, GDELT
-      (o nome da empresa vem da SEC), perfil SEC e Analyst. Pergunte ao usuário; não invente.
-- [ ] Confirmar no teste real: campos do GDELT DOC 2.0, campos `sic`/`sicDescription` das submissões da SEC,
-      índice e PDFs reais da House Clerk (rodar o demo local e abrir `/app/congress`) e `pdftotext` no Render.
+- [x] Chaves novas da Alpaca em `backend\.env`; `scripts\check_alpaca.py` e `DP_LIVE_ALPACA=1` passaram em 09/11
+      (SIP gratuito com mais de 15 min confirmado; `t` = início da barra; snapshots com chaves por símbolo no topo).
+- [x] `SEC_USER_AGENT` em `backend\.env` (valor confirmado pelo usuário em 09/11). **Falta configurar no Render.**
+- [x] Teste real no demo local (09/11): perfil SEC, Analyst, 8-K, House Clerk (índice e PDFs) e GDELT. Detalhes em
+      `docs/INTEGRACOES.md`, seção "Testes reais (09/11/2026)".
+- [ ] `test_public_pg.py`: não rodou em 09/11 (a máquina `C:\Projetos\dark-pool` não tem Postgres nem Docker).
+- [ ] GDELT instável a partir do IP do usuário (429 em 4 de 6 consultas, mesmo com intervalo longo). Hipótese não
+      confirmada: limite além dos 5 s. Observar de novo, de preferência do Render.
+- [ ] Relevância do GDELT: o nome limpo ("Apple") traz manchetes sem relação. Decisão de produto.
+- [ ] `pdftotext` no Render (o teste local usou o xpdf do Git for Windows, não o poppler). Decisão do usuário.
 - [ ] Pendências externas de termos (Alpaca em site público; parecer jurídico do Pelosi): ver o ANEXO ("PENDÊNCIAS EXTERNAS").
 
 ## Revisão final do código — FEITA em 02/11/2026
@@ -101,13 +105,20 @@ Ver a seção "Revisão final dos Blocos 7 a 10" em `docs/INTEGRACOES.md`. Suít
 Postgres local 9; frontend typecheck, 15 testes, build, lint 21 avisos antigos; Playwright 14 passed e 6 skipped.
 (O "453" do Bloco 10 somava backend e motores.)
 
-## Onde retomar: testes reais e revisão do PR #3
+## Testes reais — FEITOS em 09/11/2026
+
+No Windows do usuário, checkout `C:\Projetos\dark-pool` (não o `C:\Users\lmors\...` citado antes). Resultados em
+`docs/INTEGRACOES.md`, seção "Testes reais (09/11/2026)". O teste real mostrou três defeitos, corrigidos no último
+commit: GDELT sem intervalo entre `ArtList` e `TimelineTone` (o próprio GDELT pede 1 consulta a cada 5 s), manchetes
+do GDELT sem atribuição quando o tom falhava, e faixa de valor do PTR cortada com o texto do xpdf.
+Suítes depois das correções (Windows): backend 221 passaram e 10 pulados; motores 243; frontend typecheck, 15 testes,
+build, lint 21 avisos antigos; Playwright 14 passaram e 6 pulados; `test_public_pg.py` não rodou (sem Postgres).
+Nesta máquina o pytest precisa de `--basetemp` numa pasta permitida (o sandbox bloqueia a pasta temporária padrão).
+
+## Onde retomar: revisão do PR #3
 
 Não há bloco de código pendente. Próximos passos, um de cada vez, sempre perguntando ao usuário:
-1. Testes reais no computador do usuário (Windows, checkout `C:\Users\lmors\OneDrive\Documentos\GitHub\dark-pool`):
-   `git pull` na branch, rodar todas as suítes, depois `scripts\check_alpaca.py` com as chaves novas e o demo local
-   (`/app/congress`, notícias, perfil SEC, Analyst) com `SEC_USER_AGENT` configurado. Registrar os resultados reais
-   em `docs/INTEGRACOES.md`, separados dos testes com fixtures. Corrigir só o que o teste real mostrar.
+1. (Feito em 09/11) Testes reais. Pendências que sobraram: lista acima.
 2. Acompanhar o PR #3 (https://github.com/lorenzo-or7/dark-pool/pull/3): responder a comentários de revisão com
    correções na branch. Não fazer merge nem deploy sem autorização.
 3. Pendências externas de termos antes de publicar (Alpaca, parecer do Pelosi) e a decisão sobre o `pdftotext`.
