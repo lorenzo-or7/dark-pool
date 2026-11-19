@@ -28,6 +28,7 @@ type DisplayPolicy = {
   show_raw_prices: boolean
   show_trigger_prices: boolean
   pelosi_public: boolean
+  pelosi_shown?: boolean
   allow_unofficial_sources: boolean
   note: string | null
 }
@@ -161,7 +162,7 @@ export default function Settings() {
             <ul className="divide-y divide-line rounded-[var(--radius-md)] border border-line">
               <PolicyRow label="Preços e candles brutos" on={ws.data.display_policy.show_raw_prices} detail="Cotações, gráficos de candles e séries de preço." />
               <PolicyRow label="Preço do gatilho nos sinais" on={ws.data.display_policy.show_trigger_prices} detail="Aguarda confirmação por escrito do provedor de dados." />
-              <PolicyRow label="Divulgações do Congresso (Pelosi)" on={ws.data.display_policy.pelosi_public} detail="Aguarda parecer jurídico sobre a 5 U.S.C. §13107." />
+              <PolicyRow label="Divulgações do Congresso (Pelosi)" on={ws.data.display_policy.pelosi_shown ?? ws.data.display_policy.pelosi_public} detail="No laboratório público, aguarda parecer jurídico sobre a 5 U.S.C. §13107; no demo local, sempre visível." />
               <PolicyRow label="Fontes não oficiais (Yahoo)" on={ws.data.display_policy.allow_unofficial_sources} detail="Os termos do Yahoo não permitem coleta automatizada em site público." />
             </ul>
             {ws.data.display_policy.note && <p className="mt-2 text-xs text-faint">{ws.data.display_policy.note}</p>}

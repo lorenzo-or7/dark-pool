@@ -64,6 +64,15 @@ público. Nenhum valor secreto vai para o repositório nem para o navegador.
 4. `DP_TRUSTED_PROXY_HOPS=1` faz os limites por IP usarem o endereço que o proxy do Render acrescenta em
    `X-Forwarded-For`. Se todos os visitantes parecerem vir do mesmo IP (limites atingidos cedo demais), ajuste.
 5. `PYTHON_VERSION` está fixado no `render.yaml`; confira na documentação do Render se a versão está disponível.
+6. **`pdftotext` (página Congresso).** O runtime Python nativo do Render não tem o poppler: a lista de ferramentas
+   de https://render.com/docs/native-environments (conferida em 18/11/2026) não inclui `poppler-utils`, e a página
+   indica Docker para ferramentas fora da lista. Sem ele, a página Congresso mostra o link do PDF em vez das
+   operações lidas. Só importa se `DP_PELOSI_PUBLIC=true`. Para ler os PDFs, use `backend/Dockerfile` (instala o
+   poppler): no `render.yaml`, troque `runtime: python` por `runtime: docker`, acrescente
+   `dockerfilePath: ./Dockerfile` e remova `buildCommand` e `startCommand`. A imagem ainda não foi construída nem
+   testada (não há Docker na máquina de desenvolvimento).
+7. **O agente de paper trading não vai para o Render.** As variáveis `DP_AGENT_*` e `ALPACA_PAPER_*` ficam só no
+   `.env` do computador onde o agente roda.
 
 Plano gratuito: o serviço é suspenso após 15 minutos sem tráfego e volta em cerca de um minuto no próximo acesso.
 Tarefas que estavam rodando são marcadas como interrompidas ao voltar. O disco é temporário: por isso snapshots e

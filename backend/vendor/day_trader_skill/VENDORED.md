@@ -14,7 +14,7 @@ Because of that, upstream tests/test_broker.py, tests/test_risk.py and tests/tes
 (which load or count trader-broker) are not copied either.
 
 Integrated in the API: scanner, timemachine, entry, exit, budget, risk, news, analyst.
-trader-alerts and trader-pelosi are present but not wired to any route yet.
+trader-alerts (Bloco 5) and trader-pelosi (Bloco 10) are wired to routes; the engines are not edited.
 
 The DARK POOL backend calls these scripts through `app/engines/runner.py`
 (argument lists, no shell, timeouts, cancellation) and never edits them.

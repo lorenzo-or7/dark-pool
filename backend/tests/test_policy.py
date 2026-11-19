@@ -119,8 +119,10 @@ def test_public_refuses_unofficial_source(public_default: TestClient, monkeypatc
     assert r.status_code == 503 and r.json()["detail"]["code"] == "source_disabled"
     r = c.post("/api/scans", json={"source": "symbols", "symbols": ["TSLA"]})
     assert r.status_code == 503 and r.json()["detail"]["code"] == "source_disabled"
+    # News (Bloco 7): the Yahoo RSS is off, the answer says so; SEC/GDELT need SEC_USER_AGENT (unset here).
     r = c.get("/api/assets/TSLA/news")
-    assert r.status_code == 503 and r.json()["detail"]["code"] == "source_disabled"
+    assert r.status_code == 200 and r.json()["yahoo_included"] is False and r.json()["items"] == []
+    assert "Yahoo" in r.json()["note"] and "SEC_USER_AGENT" in r.json()["note"]
     # A stored snapshot is still usable: the server's own simulation on frozen data.
     sid = _fixture_snapshot(c)
     r = c.post("/api/timemachine", json={**PLAN, "snapshot_id": sid}).json()
