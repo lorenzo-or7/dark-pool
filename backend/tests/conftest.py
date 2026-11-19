@@ -21,6 +21,11 @@ def no_real_alpaca_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DP_ALPACA_FEED", "sip")
     for k in ("DP_SCAN_PROVIDER", "DP_QUOTE_PROVIDER", "DP_ALPACA_QUOTE_FEED"):
         monkeypatch.delenv(k, raising=False)
+    # The paper-trading agent (Bloco 11): never the user's paper keys or mode in a test.
+    for k in ("ALPACA_PAPER_KEY_ID", "ALPACA_PAPER_SECRET_KEY", "DP_AGENT_MODE", "DP_AGENT_SYMBOLS"):
+        monkeypatch.setenv(k, "")
+    from app.agent.settings import get_agent_settings
+    get_agent_settings.cache_clear()
 
 
 @pytest.fixture(autouse=True)

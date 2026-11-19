@@ -4,8 +4,12 @@
 versionadas, backtests sobre dados congelados, simulações Monte Carlo (Time Machine), análise estatística e um
 diário de pesquisa. **Acesso público pelo link, sem login:** todos os visitantes usam o mesmo laboratório.
 
-> Pesquisa e simulação apenas. Não há corretora conectada, depósito, carteira nem envio de ordens. Simulações não
-> são previsões e resultados históricos não são promessa de rentabilidade.
+> Pesquisa e simulação apenas. O site não tem corretora conectada, depósito, carteira nem envio de ordens. Simulações
+> não são previsões e resultados históricos não são promessa de rentabilidade.
+>
+> À parte do site, `scripts/paper_agent.py` (Bloco 11) é um agente que roda no seu computador e opera o plano ORB
+> só na conta **paper** da Alpaca (dinheiro simulado). Ele vem desligado (`DP_AGENT_MODE=off`) e nenhuma rota da API
+> o importa. Veja "Agente de paper trading (Bloco 11)" em `docs/INTEGRACOES.md`.
 
 ## Estrutura
 

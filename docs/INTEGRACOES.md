@@ -551,3 +551,76 @@ linhas que o poppler.
   empresa (desfile da Macy's, uma matéria da Vogue). Nomes genéricos geram ruído. Mudar a consulta é
   decisão de produto.
 - **`pdftotext` no Render**: este teste usou o xpdf do Windows; não diz nada sobre o Render (ver o Bloco 10).
+
+## Agente de paper trading (Bloco 11, 18/11/2026)
+
+Processo separado do site: `scripts/paper_agent.py` usa o pacote `backend/app/agent/`. Nenhuma rota da API o
+importa (há um teste para isso), então visitante nenhum liga, desliga ou dirige o agente. Ele vem **desligado**
+(`DP_AGENT_MODE=off`). Os motores vendorizados continuam intactos: o sinal é o mesmo plano ORB de
+`POST /api/plan/orb` (`services/orb_plan.compute`, trader-entry + trader-exit).
+
+**Só conta paper.** O endereço de ordens é a constante `PAPER_URL = https://paper-api.alpaca.markets`, sem
+configuração que o troque. Operar dinheiro real não está implementado. As chaves da conta paper
+(`ALPACA_PAPER_KEY_ID`, `ALPACA_PAPER_SECRET_KEY`) são diferentes das chaves de dados
+(https://docs.alpaca.markets/docs/paper-trading).
+
+### Dados
+
+Barras de 5 minutos da Alpaca Market Data com **feed IEX em tempo real** (`fetch_bars(..., "iex")`), só do dia,
+até o último candle fechado. O SIP gratuito tem 15 minutos de atraso e não serve para entrar. As mesmas chaves de
+dados do laboratório e a mesma cota local (`providers.py`). O agente só baixa de novo quando fecha um candle novo:
+1 chamada por ativo a cada 5 minutos.
+
+Limitação do IEX: uma única bolsa (cerca de 2% do volume). Em ativos pouco negociados faltam candles e o range de
+abertura pode sair diferente do consolidado. Use ativos líquidos (SPY, QQQ, grandes empresas).
+
+### Regras de cada verificação (`runner.Agent.tick`)
+
+1. Fora de pregão (calendário NYSE do Bloco 1) ou antes da abertura: nada.
+2. Kill switch (arquivo `<DP_DATA_DIR>/agent/STOP`, criado por `paper_agent.py stop`) ou hora de zerar
+   (fechamento menos `DP_AGENT_FLATTEN_MINUTES_BEFORE_CLOSE`, inclusive em pregão reduzido): cancela as ordens e
+   fecha as posições uma vez (`DELETE /v2/positions?cancel_orders=true`) e não entra mais no dia.
+3. Conta bloqueada ou inativa (`trading_blocked`, `account_blocked`, `status != ACTIVE`): para o dia.
+4. Perda do dia (`equity - last_equity`) no limite `DP_AGENT_MAX_DAILY_LOSS_USD`: zera tudo e para o dia.
+5. Para cada ativo ainda sem operação no dia: sinal ORB. Gatilho com mais de `DP_AGENT_MAX_SIGNAL_AGE_MIN`
+   minutos é descartado. Um gatilho novo vira **uma** ordem bracket: compra limitada no preço do gatilho mais
+   `DP_AGENT_MAX_ENTRY_SLIPPAGE_R` × R (fração do risco por ação, não do preço), stop e alvo do plano, `day`.
+6. Tamanho: `floor(min(risco por operação / (limite - stop), posição máxima / limite))`. Menos de 1 ação, alvo
+   abaixo do limite ou preço abaixo de US$ 1: não entra.
+7. No máximo uma operação por ativo e `DP_AGENT_MAX_TRADES_PER_DAY` por dia. O `client_order_id`
+   (`dp-orb-AAAA-MM-DD-SÍMBOLO`) e a lista de ordens da corretora fazem um reinício não repetir ordem.
+
+Cada decisão vai para `<DP_DATA_DIR>/agent/journal-AAAA-MM-DD.jsonl`; o estado do dia, para
+`state-AAAA-MM-DD.json`. Sem chaves nesses arquivos (há teste).
+
+Documentação usada (18/11/2026): https://docs.alpaca.markets/us/reference/postorder.md (campos como texto,
+`client_order_id` até 128 caracteres, 403 = poder de compra insuficiente, 422 = entrada inválida),
+https://docs.alpaca.markets/docs/orders-at-alpaca (bracket: `take_profit.limit_price` e `stop_loss.stop_price`
+obrigatórios, `time_in_force` `day` ou `gtc`, sem pré/pós-mercado),
+https://docs.alpaca.markets/us/reference/getaccount-1.md, https://docs.alpaca.markets/us/reference/getallorders-1.md,
+https://docs.alpaca.markets/us/reference/deleteallopenpositions-1.md (resposta 207).
+
+### Testes
+
+- `backend/tests/test_paper_agent.py` (18 testes, fixtures). Os dados são a fixture DERIVADA da TSLA de 19/10 e a
+  corretora é falsa. Os testes cobrem: desligado por padrão, endereço só paper, site sem importar o agente,
+  tamanho da posição, dry run com a ordem esperada (5 ações, limite 364,77, stop 358,32, alvo 370,04), sem
+  repetir ordem nem baixar de novo, espera antes do range, gatilho velho, fim de semana, reinício sem arquivo de
+  estado, corpo da ordem bracket, chaves fora dos erros e do diário, limite de perda, conta bloqueada, máximo de
+  operações, ordem recusada sem nova tentativa, zerar antes do fechamento e kill switch.
+- **Ensaio real em `dry_run` (18/11, sem ordens):** dados IEX reais de 17/11/2026 com o relógio simulado
+  (`--now`) em SPY, QQQ, AAPL, NVDA e TSLA. Até 10:46 ET só a AAPL disparou (candle das 09:50, fechado às 09:55).
+  O agente montou 5 ações, limite 354,89, stop 352,70 e alvo 356,68. O ensaio mostrou que uma tolerância em % do
+  preço (0,2% = US$ 0,71 contra um risco de US$ 1,99) piorava demais a relação risco/retorno. A tolerância passou
+  a ser medida em R.
+- **Ainda não testado:** a conta paper real. Faltam as chaves dela no `.env`.
+
+### Limitações e riscos
+
+- O plano ORB do laboratório só compra (o motor trader-entry é long-only).
+- O agente precisa ficar ligado durante o pregão (10:30 a 17:00 em Brasília, ou 11:30 a 18:00 no horário de
+  inverno dos EUA). Se ele cair, as ordens bracket já enviadas continuam com stop e alvo na Alpaca, mas ninguém
+  zera a posição antes do fechamento. Nesse caso, rode `paper_agent.py flatten`.
+- Resultado em paper não garante resultado com dinheiro real: na conta paper não há slippage real, fila de
+  execução nem impacto no preço.
+- Conta com menos de US$ 25 mil sofre a regra de pattern day trader (PDT) quando opera com dinheiro real.

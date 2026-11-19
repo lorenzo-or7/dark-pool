@@ -4,6 +4,20 @@
 > https://github.com/lorenzo-or7/dark-pool (ou ao checkout local do usuário). Este arquivo está na branch
 > `bloco4-entry-exit` em `Claude outputs/prompt-continuacao.md`; o contexto completo está no ANEXO, no fim.
 
+## Atualização de 18/11/2026: Bloco 11 (agente de paper trading)
+
+O usuário pediu que os "agentes operem". Foi feito, na branch `bloco4-entry-exit` (commit local, sem push):
+- `backend/app/agent/` + `scripts/paper_agent.py`: agente separado do site, desligado por padrão
+  (`DP_AGENT_MODE=off|dry_run|paper`), que opera o plano ORB **só na conta paper** da Alpaca (endereço fixo, sem
+  opção para conta real). Usa dados IEX em tempo real, limites de risco, kill switch, zera antes do fechamento e
+  grava um diário em JSONL. Detalhes em `docs/INTEGRACOES.md`, "Agente de paper trading (Bloco 11)".
+- `backend/tests/test_paper_agent.py`: 18 testes. Suíte do backend com 482 passaram e 10 pulados (Windows).
+  Ensaio real em dry_run com dados IEX de 17/11 (sem ordens).
+- `backend/Dockerfile` (opcional, com poppler): o Render nativo não tem `pdftotext` (conferido na documentação).
+  Não foi construído (não há Docker na máquina).
+- Pendente do usuário: chaves da conta paper no `.env`, escolha dos ativos e dos limites, PR #3, deploy e
+  `test_public_pg.py` (a instalação de um Postgres portátil foi bloqueada pela permissão automática).
+
 ## Papel e regras
 
 Você é o engenheiro responsável pela camada de dados do DARK POOL (laboratório público de pesquisa quantitativa de

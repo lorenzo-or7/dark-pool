@@ -1,0 +1,9 @@
+.venv/
+.data/
+.data-e2e/
+.env
+.env.*
+tests/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
